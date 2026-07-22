@@ -8,19 +8,95 @@ from datetime import datetime
 app = Flask(__name__)
 BASE = "https://www.studbook.org.ar"
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; LEA-WIN-IA/1.0)",
-    "Accept-Language": "es-AR,es;q=0.9"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "es-AR,es;q=0.9,en;q=0.7",
+    "Referer": "https://www.studbook.org.ar/",
+    "Connection": "keep-alive"
 }
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
 DB = os.getenv("LEA_DB", "lea_win.db")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 
 def clean(v):
     return re.sub(r"\s+", " ", v or "").strip()
 
-def fetch(url):
-    r = requests.get(url, headers=HEADERS, timeout=30)
+def fetch_response(url):
+    r = SESSION.get(url, timeout=30)
     r.raise_for_status()
-    return BeautifulSoup(r.text, "html.parser")
+    return r
+
+def fetch(url):
+    return BeautifulSoup(fetch_response(url).text, "html.parser")
+
+def meeting_urls_from_html(html, date_key):
+    """Extrae enlaces oficiales incluso si están dentro de scripts o JSON."""
+    found = set()
+    soup = BeautifulSoup(html, "html.parser")
+
+    for a in soup.select('a[href*="/reuniones/detalle/"]'):
+        href = urljoin(BASE, a.get("href", ""))
+        if date_key in href:
+            found.add(href)
+
+    pattern = rf'(?P<url>(?:https://www\.studbook\.org\.ar)?/reuniones/detalle/\d+/{date_key}-[^"\'<>\\\s]+)'
+    for match in re.finditer(pattern, html, re.I):
+        found.add(urljoin(BASE, match.group("url")))
+
+    return sorted(found)
+
+def locate_meetings(date_value):
+    """Busca reuniones por calendario, portada y un localizador de respaldo."""
+    dt = datetime.strptime(date_value, "%Y-%m-%d")
+    date_key = dt.strftime("%Y%m%d")
+    urls = set()
+
+    # 1. Calendario oficial del mes elegido.
+    calendar_url = f"{BASE}/reuniones?anio={dt.year}&mes={dt.month}"
+    calendar_html = fetch_response(calendar_url).text
+    urls.update(meeting_urls_from_html(calendar_html, date_key))
+
+    # 2. Portada oficial, útil para las reuniones del día.
+    if not urls:
+        home_html = fetch_response(BASE + "/").text
+        urls.update(meeting_urls_from_html(home_html, date_key))
+
+    # 3. Respaldo: el buscador solo localiza el enlace; los datos se leen
+    # siempre desde la página oficial de Stud Book.
+    if not urls:
+        query = quote_plus(
+            f"site:studbook.org.ar/reuniones/detalle {date_key}"
+        )
+        rss_url = f"https://www.bing.com/search?format=rss&q={query}"
+        try:
+            rss = SESSION.get(rss_url, timeout=20)
+            rss.raise_for_status()
+            rss_soup = BeautifulSoup(rss.text, "xml")
+            for item in rss_soup.find_all("item"):
+                link = clean(item.link.get_text()) if item.link else ""
+                if (
+                    "studbook.org.ar/reuniones/detalle/" in link
+                    and date_key in link
+                ):
+                    urls.add(link)
+        except requests.RequestException:
+            pass
+
+    return sorted(urls)
+
+def meeting_name(soup, fallback="Hipódromo"):
+    text = clean(soup.get_text(" "))
+    match = re.search(
+        r"\d{2}/\d{2}/\d{4}\s+Hipodromo de\s+(.+?)\s*\|",
+        text,
+        re.I
+    )
+    return clean(match.group(1)) if match else fallback
 
 def db():
     con = sqlite3.connect(DB)
@@ -78,25 +154,128 @@ def parse_race(soup, numero):
         return clean(m.group(1)) if m else ""
 
     participants, seen = [], set()
+
+    def participant_context(anchor, name):
+        """
+        Sube por los contenedores hasta encontrar la fila completa del ejemplar.
+        El participante real aparece como: NOMBRE por PADRE y MADRE.
+        """
+        for parent in anchor.parents:
+            if getattr(parent, "name", None) not in {
+                "tr", "li", "article", "section", "div"
+            }:
+                continue
+
+            text = clean(parent.get_text(" ", strip=True))
+            if re.search(
+                re.escape(name) + r"\s+por\b",
+                text,
+                re.I
+            ):
+                return text
+
+        return ""
+
     for a in nodes:
         if getattr(a, "name", None) != "a":
             continue
+
         href = a.get("href", "")
         name = clean(a.get_text(" "))
+
         if "/ejemplares/" not in href or not name or name in seen:
             continue
-        seen.add(name)
-        context = clean(a.parent.get_text(" ", strip=True)) if a.parent else name
-        n = re.search(r"(?:^|\s)(\d{1,2})\s+" + re.escape(name), context, re.I)
-        kg = re.findall(r"\b(\d{2}(?:[.,]\d)?)\b", context)
+
+        context = participant_context(a, name)
+
+        # Excluye padre, madre y demás enlaces de la fila.
+        # Solo el caballo participante está seguido por la palabra "por".
+        if not context or not re.search(
+            re.escape(name) + r"\s+por\b",
+            context,
+            re.I
+        ):
+            continue
+
+        number_match = re.search(
+            r"(?:^|\s)(\d{1,2})\s+(?:Image\s+)?"
+            + re.escape(name)
+            + r"\s+por\b",
+            context,
+            re.I
+        )
+
+        # Sin número confirmado no se incorpora el enlace como participante.
+        if not number_match:
+            continue
+
+        number = int(number_match.group(1))
+        unique_key = (number, name.upper())
+        if unique_key in seen:
+            continue
+        seen.add(unique_key)
+
+        pedigree_match = re.search(
+            re.escape(name)
+            + r"\s+por\s+(.+?)\s+y\s+(.+?)"
+            + r"\s+([MH])\s+(\S+)\s+(\d+)\b",
+            context,
+            re.I
+        )
+
+        weight_match = re.search(
+            r"\b((?:4[8-9]|5\d|6[0-5])(?:[.,]\d)?)\b",
+            context
+        )
+
+        campaign_matches = re.findall(
+            r"\b\d+\s*-\s*\d+\s*-\s*\d+\s*-\s*"
+            r"\d+\s*-\s*\d+\s*-\s*\d+\s*-\s*\d+\b",
+            context
+        )
+
         participants.append({
-            "numero": int(n.group(1)) if n else None,
+            "numero": number,
             "nombre": name,
             "perfil": urljoin(BASE, href),
-            "detalle": context[:700],
-            "peso": kg[-1].replace(",", ".") if kg else "",
+            "detalle": context[:900],
+            "peso": (
+                weight_match.group(1).replace(",", ".")
+                if weight_match else ""
+            ),
+            "padre": (
+                clean(pedigree_match.group(1))
+                if pedigree_match else ""
+            ),
+            "madre": (
+                clean(pedigree_match.group(2))
+                if pedigree_match else ""
+            ),
+            "sexo": (
+                pedigree_match.group(3).upper()
+                if pedigree_match else ""
+            ),
+            "pelaje": (
+                pedigree_match.group(4).upper()
+                if pedigree_match else ""
+            ),
+            "edad": (
+                int(pedigree_match.group(5))
+                if pedigree_match else None
+            ),
+            "campana_resumen": (
+                campaign_matches[-1]
+                if campaign_matches else ""
+            ),
             "retirado": False
         })
+
+    participants.sort(
+        key=lambda item: (
+            item["numero"] is None,
+            item["numero"] if item["numero"] is not None else 999
+        )
+    )
 
     return {
         "carrera": numero,
@@ -164,26 +343,34 @@ def home():
 
 @app.get("/api/reuniones")
 def reuniones():
-    fecha = request.args.get("fecha","").strip()
+    fecha = request.args.get("fecha", "").strip()
     if not fecha:
-        return jsonify(ok=False,error="Falta la fecha."),400
+        return jsonify(ok=False, error="Falta la fecha."), 400
+
     try:
-        key = datetime.strptime(fecha,"%Y-%m-%d").strftime("%Y%m%d")
-        soup = fetch(BASE + "/reuniones")
         output = []
-        for a in soup.select('a[href*="/reuniones/detalle/"]'):
-            href = urljoin(BASE, a.get("href",""))
-            if key not in href:
-                continue
+        for href in locate_meetings(fecha):
             detail = fetch(href)
+            races = extract_races_from_meeting(detail)
+            if not races:
+                continue
             output.append({
-                "hipodromo": clean(a.get_text(" ")) or "Hipódromo",
+                "hipodromo": meeting_name(detail),
                 "url": href,
-                "carreras": extract_races_from_meeting(detail)
+                "carreras": races
             })
-        return jsonify(ok=True,reuniones=output)
+
+        output.sort(key=lambda x: x["hipodromo"])
+        return jsonify(ok=True, reuniones=output)
+
+    except ValueError:
+        return jsonify(ok=False, error="La fecha no es válida."), 400
     except Exception as e:
-        return jsonify(ok=False,error="No se pudieron consultar las reuniones.",detalle=str(e)),502
+        return jsonify(
+            ok=False,
+            error="No se pudieron consultar las reuniones.",
+            detalle=str(e)
+        ), 502
 
 @app.get("/api/carrera")
 def carrera():
