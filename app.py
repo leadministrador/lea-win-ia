@@ -157,8 +157,9 @@ def parse_race(soup, numero):
 
     def participant_context(anchor, name):
         """
-        Sube por los contenedores hasta encontrar la fila completa del ejemplar.
-        El participante real aparece como: NOMBRE por PADRE y MADRE.
+        Devuelve el contenedor más pequeño de la fila del participante
+        y su texto. Los enlaces de resultados dentro de esa fila apuntan
+        a las carreras anteriores oficiales en Stud Book.
         """
         for parent in anchor.parents:
             if getattr(parent, "name", None) not in {
@@ -172,9 +173,9 @@ def parse_race(soup, numero):
                 text,
                 re.I
             ):
-                return text
+                return parent, text
 
-        return ""
+        return None, ""
 
     for a in nodes:
         if getattr(a, "name", None) != "a":
@@ -186,7 +187,7 @@ def parse_race(soup, numero):
         if "/ejemplares/" not in href or not name or name in seen:
             continue
 
-        context = participant_context(a, name)
+        row_node, context = participant_context(a, name)
 
         # Excluye padre, madre y demás enlaces de la fila.
         # Solo el caballo participante está seguido por la palabra "por".
@@ -234,6 +235,21 @@ def parse_race(soup, numero):
             context
         )
 
+        previous_races = []
+        if row_node is not None:
+            for race_link in row_node.select(
+                'a[href*="/reuniones/carrera/"]'
+            ):
+                race_url = urljoin(BASE, race_link.get("href", ""))
+                result_code = clean(race_link.get_text(" "))
+                if race_url and not any(
+                    item["url"] == race_url for item in previous_races
+                ):
+                    previous_races.append({
+                        "codigo": result_code,
+                        "url": race_url
+                    })
+
         participants.append({
             "numero": number,
             "nombre": name,
@@ -267,6 +283,7 @@ def parse_race(soup, numero):
                 campaign_matches[-1]
                 if campaign_matches else ""
             ),
+            "carreras_previas": previous_races,
             "retirado": False
         })
 
@@ -287,6 +304,185 @@ def parse_race(soup, numero):
         "categoria": get(r"Categoria:\s*(.+?)(?:Premios|PROGRAMA|RESULTADOS|$)"),
         "participantes": participants
     }
+
+
+def youtube_video_id(value):
+    """Obtiene el identificador de un enlace real de YouTube."""
+    if not value:
+        return ""
+
+    patterns = [
+        r"(?:youtube\.com|youtube-nocookie\.com)/(?:embed|shorts|live)/([A-Za-z0-9_-]{6,})",
+        r"youtube\.com/watch\?(?:[^#\s]*&)?v=([A-Za-z0-9_-]{6,})",
+        r"youtu\.be/([A-Za-z0-9_-]{6,})"
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, value, re.I)
+        if match:
+            return match.group(1)
+
+    return ""
+
+
+def extract_exact_videos(soup):
+    """
+    Busca únicamente videos enlazados dentro de la página oficial
+    de esa carrera. No realiza búsquedas generales por nombre.
+    """
+    found = {}
+
+    for tag in soup.find_all(True):
+        for attribute in (
+            "href", "src", "data-src", "data-url", "data-video",
+            "data-youtube", "onclick"
+        ):
+            value = tag.get(attribute)
+            if not isinstance(value, str):
+                continue
+
+            video_id = youtube_video_id(value)
+            if video_id:
+                found[video_id] = {
+                    "id": video_id,
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "embed": f"https://www.youtube.com/embed/{video_id}"
+                }
+
+    raw_html = str(soup)
+    for pattern in [
+        r"https?://(?:www\.)?(?:youtube\.com|youtube-nocookie\.com)/(?:embed|shorts|live)/[A-Za-z0-9_-]{6,}",
+        r"https?://(?:www\.)?youtube\.com/watch\?[^\"'<>\s]+",
+        r"https?://youtu\.be/[A-Za-z0-9_-]{6,}"
+    ]:
+        for value in re.findall(pattern, raw_html, re.I):
+            video_id = youtube_video_id(value.replace("&amp;", "&"))
+            if video_id:
+                found[video_id] = {
+                    "id": video_id,
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "embed": f"https://www.youtube.com/embed/{video_id}"
+                }
+
+    return list(found.values())
+
+
+def race_information(soup, race_url, horse_name="", result_code=""):
+    text = clean(soup.get_text(" "))
+
+    date_track = re.search(
+        r"(\d{2}/\d{2}/\d{4})\s+(.+?)(?:PDF|Programa oficial|\d+[º°ª]\s*Carrera)",
+        text,
+        re.I
+    )
+    race_heading = next(
+        (
+            clean(h.get_text(" "))
+            for h in soup.find_all(["h2", "h3"])
+            if re.search(r"\d+\s*[º°ª]?\s*Carrera", clean(h.get_text(" ")), re.I)
+        ),
+        ""
+    )
+    prize = re.search(r"Premio:\s*(.+?)\s+Distancia:", text, re.I)
+    distance = re.search(r"Distancia:\s*(\d+)\s*mts", text, re.I)
+    track_state = re.search(
+        r"Pista:\s*(.+?)(?:\s*\|\s*Categoria:|Premios|RESULTADOS)",
+        text,
+        re.I
+    )
+
+    position = ""
+    if horse_name:
+        for row in soup.find_all("tr"):
+            row_text = clean(row.get_text(" "))
+            if horse_name.lower() in row_text.lower():
+                position_match = re.match(r"(\d{1,2})\s+\d{1,2}\s+", row_text)
+                if position_match:
+                    position = position_match.group(1)
+                    break
+
+    return {
+        "codigo": result_code,
+        "url_studbook": race_url,
+        "fecha": date_track.group(1) if date_track else "",
+        "hipodromo": clean(date_track.group(2)) if date_track else "",
+        "carrera": race_heading,
+        "premio": clean(prize.group(1)) if prize else "",
+        "distancia": int(distance.group(1)) if distance else None,
+        "pista": clean(track_state.group(1)) if track_state else "",
+        "posicion": position,
+        "videos": extract_exact_videos(soup)
+    }
+
+
+def horse_previous_races(horse, limit=12):
+    profile = horse.get("perfil", "")
+    horse_name = horse.get("nombre", "")
+    links = []
+
+    # Primero conserva las ocho actuaciones enlazadas en el programa.
+    for item in horse.get("carreras_previas", []):
+        url = item.get("url", "")
+        if url.startswith(BASE + "/reuniones/carrera/"):
+            links.append({
+                "url": url,
+                "codigo": item.get("codigo", "")
+            })
+
+    # Luego completa la campaña desde el perfil individual.
+    if profile.startswith(BASE + "/ejemplares/"):
+        try:
+            profile_soup = fetch(profile)
+            for anchor in profile_soup.select(
+                'a[href*="/reuniones/carrera/"]'
+            ):
+                url = urljoin(BASE, anchor.get("href", ""))
+                links.append({
+                    "url": url,
+                    "codigo": clean(anchor.get_text(" "))
+                })
+        except Exception:
+            pass
+
+    unique_links = []
+    seen_urls = set()
+    for item in links:
+        if item["url"] in seen_urls:
+            continue
+        seen_urls.add(item["url"])
+        unique_links.append(item)
+        if len(unique_links) >= limit:
+            break
+
+    races = []
+    for item in unique_links:
+        try:
+            race_soup = fetch(item["url"])
+            races.append(
+                race_information(
+                    race_soup,
+                    item["url"],
+                    horse_name,
+                    item.get("codigo", "")
+                )
+            )
+        except Exception:
+            races.append({
+                "codigo": item.get("codigo", ""),
+                "url_studbook": item["url"],
+                "fecha": "",
+                "hipodromo": "",
+                "carrera": "",
+                "premio": "",
+                "distancia": None,
+                "pista": "",
+                "posicion": "",
+                "videos": [],
+                "error": "No se pudo leer esta carrera."
+            })
+
+    return races
+
 
 def enrich_horse(horse):
     profile = horse.get("perfil", "")
@@ -409,24 +605,34 @@ def analizar():
         x["probabilidad_relativa"] = round(x["score"]/total*100,1)
     return jsonify(ok=True,ranking=top,confianza=round(top[0]["score"],1))
 
-@app.get("/api/videos")
-def videos():
-    horse = request.args.get("caballo","").strip()
-    if not horse:
-        return jsonify(ok=False,error="Falta el caballo."),400
-    query = f'{horse} carrera caballo Argentina'
-    if not YOUTUBE_API_KEY:
-        return jsonify(ok=True,modo="busqueda",url="https://www.youtube.com/results?search_query="+quote_plus(query),videos=[])
-    url = "https://www.googleapis.com/youtube/v3/search"
-    params = {"part":"snippet","q":query,"type":"video","maxResults":5,"key":YOUTUBE_API_KEY}
-    r = requests.get(url,params=params,timeout=20)
-    r.raise_for_status()
-    items = [{
-        "id":x["id"]["videoId"],
-        "titulo":x["snippet"]["title"],
-        "miniatura":x["snippet"]["thumbnails"]["medium"]["url"]
-    } for x in r.json().get("items",[])]
-    return jsonify(ok=True,modo="api",videos=items)
+@app.post("/api/carreras-videos")
+def carreras_videos():
+    data = request.get_json(silent=True) or {}
+    horse = data.get("caballo") or {}
+
+    profile = horse.get("perfil", "")
+    previous = horse.get("carreras_previas", [])
+
+    if (
+        not profile.startswith(BASE + "/ejemplares/")
+        and not previous
+    ):
+        return jsonify(
+            ok=False,
+            error="Este participante no tiene enlaces oficiales disponibles."
+        ), 400
+
+    races = horse_previous_races(horse)
+    videos_count = sum(len(race.get("videos", [])) for race in races)
+
+    return jsonify(
+        ok=True,
+        caballo=horse.get("nombre", ""),
+        carreras=races,
+        total_carreras=len(races),
+        total_videos=videos_count
+    )
+
 
 @app.post("/api/guardar")
 def guardar():
