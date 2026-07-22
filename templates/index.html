@@ -1,0 +1,55 @@
+<!doctype html><html lang="es"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#07110c"><link rel="manifest" href="/static/manifest.json">
+<title>LEA WIN IA</title><style>
+:root{--b:#07110c;--c:#102218;--d:#08140e;--g:#1ed760;--t:#f4fff8;--m:#a8b8ae;--l:#294636;--r:#ff6b6b}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(#06100b,#0c1a12);color:var(--t);font-family:Arial,sans-serif}
+header{position:sticky;top:0;z-index:4;background:#07110cf4;border-bottom:1px solid var(--l);padding:14px 16px}
+.logo{font-size:22px;font-weight:900}.logo span{color:var(--g)}main{max-width:900px;margin:auto;padding:14px}
+.panel{background:var(--c);border:1px solid var(--l);border-radius:16px;padding:14px;margin-bottom:12px}
+h2{font-size:17px;margin:0 0 10px}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}
+label{display:block;font-size:12px;color:var(--m);margin:7px 0 5px}input,select{width:100%;padding:12px;border:1px solid var(--l);border-radius:10px;background:var(--d);color:var(--t)}
+button{width:100%;padding:13px;margin-top:11px;border:0;border-radius:11px;background:var(--g);font-weight:900;color:#06100b}
+.secondary{background:#183526;color:var(--t);border:1px solid var(--l)}
+.status,.horse,.rank{margin-top:8px;padding:11px;border:1px solid var(--l);border-radius:11px;background:var(--d);font-size:13px}
+.horse.retired{opacity:.55;border-color:var(--r)}.num{display:inline-grid;place-items:center;width:34px;height:34px;border-radius:9px;background:var(--g);color:#06100b;font-weight:900;margin-right:8px}
+.small{font-size:12px;color:var(--m);margin-top:4px}.hidden{display:none}.rank b{color:var(--g)}
+.tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px}.tabs button{margin:0;padding:10px 5px;font-size:11px}
+@media(max-width:600px){.grid{grid-template-columns:1fr}.tabs{grid-template-columns:repeat(2,1fr)}}
+</style></head><body>
+<header><div class="logo">LEA <span>WIN IA</span></div></header><main>
+<div class="tabs"><button onclick="go('buscar')">Buscar</button><button onclick="go('datos')">Datos</button><button onclick="go('analisis')">Análisis</button><button onclick="go('historial')">Historial</button></div>
+
+<section id="buscar" class="panel"><h2>Buscar carrera</h2>
+<label>Fecha</label><input id="fecha" type="date" onchange="buscarFecha()"><div id="estado" class="status">Elegí una fecha.</div>
+<div id="seleccion" class="hidden"><label>Hipódromo</label><select id="hipodromo" onchange="cargarCarreras()"></select>
+<label>Carrera</label><select id="carrera"></select><button onclick="cargarCarrera()">Cargar carrera</button></div></section>
+
+<section id="datos" class="panel hidden"><h2>Datos del día</h2><div class="grid">
+<div><label>Pista actual</label><select id="pistaDia"><option>Sin confirmar</option><option>Normal</option><option>Húmeda</option><option>Pesada</option><option>Barrosa</option></select></div>
+<div><label>Clima</label><select id="clima"><option>Sin confirmar</option><option>Despejado</option><option>Nublado</option><option>Lluvia</option><option>Viento</option></select></div>
+<div><label>Viento</label><input id="viento" placeholder="Ej.: 25 km/h de frente"></div>
+<div><label>Retiros</label><input id="retiros" placeholder="Ej.: 3, 8" oninput="aplicarRetiros()"></div>
+<div><label>Observaciones</label><input id="observaciones" placeholder="Jockey, herraje, cambios..."></div></div>
+<div id="meta" class="status">Primero cargá una carrera.</div><div id="lista"></div>
+<button onclick="enriquecer()">Traer campañas anteriores</button><button onclick="analizar()">Analizar carrera</button></section>
+
+<section id="analisis" class="panel hidden"><h2>Pronóstico LEA</h2><div id="ranking" class="status">Todavía no se analizó.</div>
+<button onclick="guardar()">Guardar análisis</button></section>
+
+<section id="historial" class="panel hidden"><h2>Historial</h2><button onclick="cargarHistorial()">Actualizar</button><div id="historialLista"></div></section>
+</main><script>
+let reuniones=[],actual=null,ultimoAnalisis=null;
+function go(id){['buscar','datos','analisis','historial'].forEach(x=>document.getElementById(x).classList.toggle('hidden',x!==id));if(id==='historial')cargarHistorial()}
+async function buscarFecha(){estado.textContent='Buscando carreras del día...';const r=await fetch('/api/reuniones?fecha='+fecha.value);const d=await r.json();if(!d.ok||!d.reuniones.length){seleccion.classList.add('hidden');estado.textContent=d.error||'No hay reuniones.';return}reuniones=d.reuniones;hipodromo.innerHTML=reuniones.map((x,i)=>`<option value="${i}">${x.hipodromo}</option>`).join('');cargarCarreras();seleccion.classList.remove('hidden');estado.textContent='Elegí la carrera.'}
+function cargarCarreras(){const r=reuniones[+hipodromo.value];carrera.innerHTML=r.carreras.map(x=>`<option value="${x.numero}">${x.titulo}</option>`).join('')}
+async function cargarCarrera(){const reu=reuniones[+hipodromo.value];estado.textContent='Cargando participantes...';const q=new URLSearchParams({url:reu.url,numero:carrera.value});const r=await fetch('/api/carrera?'+q);const d=await r.json();if(!d.ok){estado.textContent=d.error;return}actual={fecha:fecha.value,hipodromo:reu.hipodromo,numero:d.carrera,premio:d.premio,distancia:d.distancia||null,superficie:d.superficie,estado_publicado:d.estado,condicion:d.condicion,participantes:d.participantes};meta.innerHTML=`<b>${d.premio||''}</b><br>${d.distancia||'?'} m · ${d.superficie||''} · ${d.estado||''}`;render();estado.textContent=d.participantes.length+' participantes cargados.';go('datos')}
+function aplicarRetiros(){if(!actual)return;const set=new Set(retiros.value.split(',').map(x=>x.trim()).filter(Boolean));actual.participantes.forEach(p=>p.retirado=set.has(String(p.numero)));render()}
+function render(){lista.innerHTML=actual.participantes.map(p=>`<div class="horse ${p.retirado?'retired':''}"><span class="num">${p.numero||'?'}</span><b>${p.nombre}</b>${p.retirado?' · RETIRADO':''}<div class="small">${p.campana||p.detalle||''}</div><button class="secondary" onclick="video('${p.nombre.replaceAll("'","")}')">Buscar videos</button></div>`).join('')}
+async function enriquecer(){estado.textContent='Cargando campañas...';const r=await fetch('/api/enriquecer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({participantes:actual.participantes})});const d=await r.json();actual.participantes=d.participantes;render();estado.textContent='Campañas anteriores incorporadas.'}
+async function analizar(){aplicarRetiros();const body={...actual,pista_dia:pistaDia.value,clima:clima.value,viento:viento.value,observaciones:observaciones.value};const r=await fetch('/api/analizar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!d.ok){ranking.textContent=d.error;go('analisis');return}ultimoAnalisis=d;ranking.innerHTML=d.ranking.map((x,i)=>`<div class="rank"><b>${i+1}.º · N.º ${x.numero||'?'} — ${x.nombre}</b><br>Score: ${x.score}/100 · Probabilidad relativa: ${x.probabilidad_relativa}%<div class="small">${x.motivos.join(' · ')||'Sin motivos suficientes detectados'}</div></div>`).join('');go('analisis')}
+async function guardar(){if(!actual||!ultimoAnalisis){ranking.textContent='Primero analizá la carrera.';return}const body={...actual,pista_dia:pistaDia.value,clima:clima.value,viento:viento.value,retiros:actual.participantes.filter(x=>x.retirado).map(x=>x.numero),observaciones:observaciones.value,analisis:ultimoAnalisis};const r=await fetch('/api/guardar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();ranking.innerHTML+=`<div class="status">${d.mensaje||d.error}</div>`}
+async function cargarHistorial(){const r=await fetch('/api/historial');const d=await r.json();historialLista.innerHTML=d.carreras.map(x=>`<div class="horse"><b>${x.fecha} · ${x.hipodromo} · Carrera ${x.numero}</b><br>${x.premio||''}</div>`).join('')}
+async function video(nombre){const r=await fetch('/api/videos?caballo='+encodeURIComponent(nombre));const d=await r.json();if(d.modo==='api'&&d.videos.length){lista.innerHTML+=d.videos.map(v=>`<div class="horse"><iframe width="100%" height="220" src="https://www.youtube.com/embed/${v.id}" allowfullscreen></iframe><div>${v.titulo}</div></div>`).join('')}else{window.open(d.url,'_blank')}}
+if('serviceWorker'in navigator)navigator.serviceWorker.register('/static/sw.js');
+</script></body></html>
