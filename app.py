@@ -148,6 +148,9 @@ def parse_race(soup, numero):
     block = clean(" ".join(
         n.get_text(" ", strip=True) for n in nodes if hasattr(n, "get_text")
     ))
+    page_text = clean(soup.get_text(" "))
+    race_date_match = re.search(r"\b(\d{2}/\d{2}/\d{4})\b", page_text)
+    race_date = race_date_match.group(1) if race_date_match else ""
 
     def get(pattern):
         m = re.search(pattern, block, re.I)
@@ -235,6 +238,79 @@ def parse_race(soup, numero):
             context
         )
 
+        def linked_person(fragment):
+            if row_node is None:
+                return "", ""
+            link = row_node.select_one(f'a[href*="{fragment}"]')
+            if not link:
+                return "", ""
+            return clean(link.get_text(" ")), urljoin(BASE, link.get("href", ""))
+
+        jockey, jockey_url = linked_person("/profesionales/jockey/")
+        entrenador, entrenador_url = linked_person("/profesionales/entrenador/")
+        caballeriza, caballeriza_url = linked_person("/caballerizas/perfil/")
+
+        peso_caballo = ""
+        peso_jockey = ""
+
+        cells = []
+        if row_node is not None and getattr(row_node, "name", None) == "tr":
+            cells = row_node.find_all(["td", "th"], recursive=False)
+
+        jockey_link = (
+            row_node.select_one('a[href*="/profesionales/jockey/"]')
+            if row_node is not None else None
+        )
+
+        if cells and jockey_link:
+            jockey_cell = jockey_link.find_parent(["td", "th"])
+            if jockey_cell in cells:
+                jockey_index = cells.index(jockey_cell)
+
+                # El peso corporal está antes de la celda del jockey.
+                for cell in reversed(cells[:jockey_index]):
+                    value = clean(cell.get_text(" "))
+                    match = re.fullmatch(r"(\d{3})", value)
+                    if match and 300 <= int(match.group(1)) <= 700:
+                        peso_caballo = match.group(1)
+                        break
+
+                # El peso que carga está después del jockey.
+                for cell in cells[jockey_index + 1:jockey_index + 3]:
+                    value = clean(cell.get_text(" "))
+                    match = re.fullmatch(r"(\d{2}(?:[.,]\d)?)", value)
+                    if match:
+                        number_value = float(match.group(1).replace(",", "."))
+                        if 45 <= number_value <= 65:
+                            peso_jockey = match.group(1).replace(",", ".")
+                            break
+
+        # Respaldo para formatos donde la fila no usa celdas HTML.
+        if jockey:
+            before_jockey = context.split(jockey, 1)[0]
+            if not peso_caballo:
+                body_candidates = re.findall(r"\b(\d{3})\b", before_jockey)
+                valid_body = [
+                    value for value in body_candidates
+                    if 300 <= int(value) <= 700
+                ]
+                if valid_body:
+                    peso_caballo = valid_body[-1]
+
+            if not peso_jockey:
+                after_jockey = context.split(jockey, 1)[1]
+                if entrenador and entrenador in after_jockey:
+                    after_jockey = after_jockey.split(entrenador, 1)[0]
+                load_candidates = re.findall(
+                    r"\b(\d{2}(?:[.,]\d)?)\b",
+                    after_jockey
+                )
+                for value in load_candidates:
+                    number_value = float(value.replace(",", "."))
+                    if 45 <= number_value <= 65:
+                        peso_jockey = value.replace(",", ".")
+                        break
+
         previous_races = []
         if row_node is not None:
             for race_link in row_node.select(
@@ -283,7 +359,18 @@ def parse_race(soup, numero):
                 campaign_matches[-1]
                 if campaign_matches else ""
             ),
+            "jockey": jockey,
+            "jockey_url": jockey_url,
+            "peso_jockey": peso_jockey,
+            "peso": peso_jockey,
+            "entrenador": entrenador,
+            "entrenador_url": entrenador_url,
+            "caballeriza": caballeriza,
+            "caballeriza_url": caballeriza_url,
+            "peso_caballo": peso_caballo,
+            "fecha_carrera": race_date,
             "carreras_previas": previous_races,
+            "ultimas_8": previous_races[:8],
             "retirado": False
         })
 
@@ -488,21 +575,90 @@ def enrich_horse(horse):
     profile = horse.get("perfil", "")
     if not profile:
         return horse
+
     try:
         soup = fetch(profile)
         text = clean(soup.get_text(" "))
-        horse["sexo"] = (re.search(r"\b(Macho|Hembra)\b", text, re.I) or [None, ""])[1]
-        horse["campana"] = clean((re.search(r"#?\s*CAMPAÑA\s*(.+?)(?:POR HIPODROMO|PEDIGREE|$)", text, re.I) or [None, ""])[1])[:1000]
-        horse["actuaciones"] = []
+
+        horse["sexo"] = (
+            re.search(r"\b(Macho|Hembra)\b", text, re.I)
+            or [None, horse.get("sexo", "")]
+        )[1]
+
+        horse["campana"] = clean((
+            re.search(
+                r"#?\s*CAMPAÑA\s*(.+?)(?:POR HIPODROMO|PEDIGREE|$)",
+                text,
+                re.I
+            ) or [None, ""]
+        )[1])[:1000]
+
+        current_date = None
+        if horse.get("fecha_carrera"):
+            try:
+                current_date = datetime.strptime(
+                    horse["fecha_carrera"],
+                    "%d/%m/%Y"
+                )
+            except ValueError:
+                current_date = None
+
+        performances = []
         for tr in soup.find_all("tr"):
             row = clean(tr.get_text(" "))
-            if re.search(r"\d{2}/\d{2}/\d{4}", row):
-                horse["actuaciones"].append(row[:500])
-        horse["actuaciones"] = horse["actuaciones"][:12]
+            date_match = re.search(r"\b(\d{2}/\d{2}/\d{4})\b", row)
+            if not date_match:
+                continue
+
+            try:
+                performance_date = datetime.strptime(
+                    date_match.group(1),
+                    "%d/%m/%Y"
+                )
+            except ValueError:
+                continue
+
+            # Excluye anotaciones futuras.
+            if current_date and performance_date >= current_date:
+                continue
+
+            performances.append({
+                "fecha": date_match.group(1),
+                "fecha_orden": performance_date,
+                "detalle": row[:500]
+            })
+
+        performances.sort(
+            key=lambda item: item["fecha_orden"],
+            reverse=True
+        )
+
+        latest_eight = performances[:8]
+        horse["actuaciones_detalle"] = [
+            {
+                "fecha": item["fecha"],
+                "detalle": item["detalle"]
+            }
+            for item in latest_eight
+        ]
+        horse["actuaciones"] = [
+            item["detalle"] for item in latest_eight
+        ]
+
+        if latest_eight:
+            horse["ultima_actuacion"] = latest_eight[0]["fecha"]
+
+            if current_date:
+                horse["dias_sin_correr"] = (
+                    current_date - latest_eight[0]["fecha_orden"]
+                ).days
+
     except Exception:
         horse.setdefault("sexo", "")
         horse.setdefault("campana", "")
         horse.setdefault("actuaciones", [])
+        horse.setdefault("actuaciones_detalle", [])
+
     return horse
 
 def score_horse(h, context):
