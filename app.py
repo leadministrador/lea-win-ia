@@ -501,6 +501,132 @@ def parse_race(soup, numero):
             "retirado": False
         })
 
+
+    # Respaldo para carreras ya finalizadas:
+    # Stud Book muestra los participantes dentro de la tabla RESULTADOS.
+    if not participants:
+        result_rows = [
+            node for node in nodes
+            if getattr(node, "name", None) == "tr"
+        ]
+
+        for row in result_rows:
+            horse_link = row.select_one(
+                'a[href*="/ejemplares/perfil/"], '
+                'a[href*="/ejemplares/"]'
+            )
+            if not horse_link:
+                continue
+
+            name = clean(horse_link.get_text(" "))
+            href = horse_link.get("href", "")
+            row_text = clean(row.get_text(" ", strip=True))
+
+            if not name or not href:
+                continue
+
+            result_match = re.match(
+                r"(\d{1,2})\s+(\d{1,2})\s+(?:Image\s+)?"
+                + re.escape(name)
+                + r"\b",
+                row_text,
+                re.I
+            )
+            if not result_match:
+                continue
+
+            position = int(result_match.group(1))
+            number = int(result_match.group(2))
+
+            jockey_link = row.select_one(
+                'a[href*="/profesionales/jockey/"], '
+                'a[href*="/jockey/"]'
+            )
+            trainer_link = row.select_one(
+                'a[href*="/profesionales/entrenador/"], '
+                'a[href*="/entrenador/"]'
+            )
+            stable_link = row.select_one(
+                'a[href*="/caballerizas/perfil/"], '
+                'a[href*="/caballerizas/"]'
+            )
+
+            jockey = clean(jockey_link.get_text(" ")) if jockey_link else ""
+            trainer = clean(trainer_link.get_text(" ")) if trainer_link else ""
+            stable = clean(stable_link.get_text(" ")) if stable_link else ""
+
+            after_name = row_text.split(name, 1)[1] if name in row_text else ""
+            before_jockey = (
+                after_name.split(jockey, 1)[0]
+                if jockey and jockey in after_name
+                else after_name
+            )
+
+            horse_data = re.search(
+                r"\b([MH])\s+([A-ZÑ]{1,3})\s+(\d{1,2})\s+(\d{3})\b",
+                before_jockey,
+                re.I
+            )
+
+            sex = horse_data.group(1).upper() if horse_data else ""
+            coat = horse_data.group(2).upper() if horse_data else ""
+            age = int(horse_data.group(3)) if horse_data else None
+            body_weight = horse_data.group(4) if horse_data else ""
+
+            carried_weight = ""
+            if jockey and jockey in row_text:
+                after_jockey = row_text.split(jockey, 1)[1]
+                if trainer and trainer in after_jockey:
+                    after_jockey = after_jockey.split(trainer, 1)[0]
+
+                load_match = re.search(
+                    r"\b((?:4[5-9]|5\d|6[0-5])(?:[.,]\d)?)\b",
+                    after_jockey
+                )
+                if load_match:
+                    carried_weight = load_match.group(1).replace(",", ".")
+
+            unique_key = (number, name.upper())
+            if unique_key in seen:
+                continue
+            seen.add(unique_key)
+
+            participants.append({
+                "numero": number,
+                "nombre": name,
+                "perfil": urljoin(BASE, href),
+                "detalle": row_text[:900],
+                "posicion_resultado": position,
+                "sexo": sex,
+                "pelaje": coat,
+                "edad": age,
+                "peso_caballo": body_weight,
+                "peso_jockey": carried_weight,
+                "peso": carried_weight,
+                "jockey": jockey,
+                "jockey_url": (
+                    urljoin(BASE, jockey_link.get("href", ""))
+                    if jockey_link else ""
+                ),
+                "entrenador": trainer,
+                "entrenador_url": (
+                    urljoin(BASE, trainer_link.get("href", ""))
+                    if trainer_link else ""
+                ),
+                "caballeriza": stable,
+                "caballeriza_url": (
+                    urljoin(BASE, stable_link.get("href", ""))
+                    if stable_link else ""
+                ),
+                "padre": "",
+                "madre": "",
+                "campana_resumen": "",
+                "fecha_carrera": race_date,
+                "carreras_previas": [],
+                "ultimas_8": [],
+                "retirado": False
+            })
+
     participants.sort(
         key=lambda item: (
             item["numero"] is None,
