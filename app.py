@@ -50,44 +50,163 @@ def meeting_urls_from_html(html, date_key):
 
     return sorted(found)
 
-def locate_meetings(date_value):
-    """Busca reuniones por calendario, portada y un localizador de respaldo."""
+def cached_meeting_urls(date_value):
+    """Recupera reuniones encontradas anteriormente para esa fecha."""
+    try:
+        con = db()
+        rows = con.execute(
+            "SELECT url FROM reuniones_cache WHERE fecha=? ORDER BY url",
+            (date_value,)
+        ).fetchall()
+        con.close()
+        return [row["url"] for row in rows]
+    except Exception:
+        return []
+
+
+def save_meeting_cache(date_value, urls):
+    """Guarda los enlaces oficiales para que no desaparezcan después."""
+    if not urls:
+        return
+
+    try:
+        con = db()
+        now = datetime.now().isoformat(timespec="seconds")
+        for url in urls:
+            con.execute(
+                """
+                INSERT INTO reuniones_cache(fecha,url,hipodromo,actualizado_en)
+                VALUES(?,?,?,?)
+                ON CONFLICT(fecha,url) DO UPDATE SET
+                    actualizado_en=excluded.actualizado_en
+                """,
+                (date_value, url, "", now)
+            )
+        con.commit()
+        con.close()
+    except Exception:
+        pass
+
+
+def meeting_detail_from_race_url(race_url):
+    """
+    Si el buscador encuentra una carrera individual, entra a esa página
+    oficial y recupera el enlace de la reunión completa.
+    """
+    try:
+        soup = fetch(race_url)
+
+        for anchor in soup.select('a[href*="/reuniones/detalle/"]'):
+            href = urljoin(BASE, anchor.get("href", ""))
+            if href.startswith(BASE + "/reuniones/detalle/"):
+                return href
+
+        # Algunos detalles contienen la URL dentro de scripts.
+        html = str(soup)
+        match = re.search(
+            r'(?:https://www\.studbook\.org\.ar)?'
+            r'(/reuniones/detalle/\d+/\d{8}-[^"\'<>\\\s]+)',
+            html,
+            re.I
+        )
+        if match:
+            return urljoin(BASE, match.group(1))
+    except Exception:
+        pass
+
+    return ""
+
+
+def indexed_meeting_urls(date_value):
+    """
+    Localiza páginas ya finalizadas. El buscador solo encuentra enlaces;
+    todos los datos se leen después desde Stud Book.
+    """
     dt = datetime.strptime(date_value, "%Y-%m-%d")
     date_key = dt.strftime("%Y%m%d")
-    urls = set()
+    date_text = dt.strftime("%d/%m/%Y")
+    found = set()
 
-    # 1. Calendario oficial del mes elegido.
-    calendar_url = f"{BASE}/reuniones?anio={dt.year}&mes={dt.month}"
-    calendar_html = fetch_response(calendar_url).text
-    urls.update(meeting_urls_from_html(calendar_html, date_key))
+    queries = [
+        f'site:studbook.org.ar/reuniones/detalle "{date_text}"',
+        f'site:studbook.org.ar/reuniones/detalle {date_key}',
+        f'site:studbook.org.ar/reuniones/carrera "{date_text}"',
+        f'site:studbook.org.ar/reuniones/carrera {date_key}'
+    ]
 
-    # 2. Portada oficial, útil para las reuniones del día.
-    if not urls:
-        home_html = fetch_response(BASE + "/").text
-        urls.update(meeting_urls_from_html(home_html, date_key))
-
-    # 3. Respaldo: el buscador solo localiza el enlace; los datos se leen
-    # siempre desde la página oficial de Stud Book.
-    if not urls:
-        query = quote_plus(
-            f"site:studbook.org.ar/reuniones/detalle {date_key}"
+    for query_text in queries:
+        rss_url = (
+            "https://www.bing.com/search?format=rss&q="
+            + quote_plus(query_text)
         )
-        rss_url = f"https://www.bing.com/search?format=rss&q={query}"
+
         try:
             rss = SESSION.get(rss_url, timeout=20)
             rss.raise_for_status()
             rss_soup = BeautifulSoup(rss.text, "xml")
+
             for item in rss_soup.find_all("item"):
                 link = clean(item.link.get_text()) if item.link else ""
-                if (
-                    "studbook.org.ar/reuniones/detalle/" in link
-                    and date_key in link
-                ):
-                    urls.add(link)
+                if "studbook.org.ar/reuniones/detalle/" in link:
+                    if date_key in link:
+                        found.add(link)
+                elif "studbook.org.ar/reuniones/carrera/" in link:
+                    detail_url = meeting_detail_from_race_url(link)
+                    if detail_url and date_key in detail_url:
+                        found.add(detail_url)
+
+        except requests.RequestException:
+            continue
+
+    return sorted(found)
+
+
+def locate_meetings(date_value):
+    """
+    Busca reuniones vigentes y ya finalizadas.
+    Orden:
+    1. Caché propia.
+    2. Calendario oficial de Stud Book.
+    3. Portada oficial.
+    4. Índice web que localiza páginas oficiales antiguas.
+    """
+    dt = datetime.strptime(date_value, "%Y-%m-%d")
+    date_key = dt.strftime("%Y%m%d")
+    urls = set(cached_meeting_urls(date_value))
+
+    calendar_pages = [
+        BASE + "/reuniones",
+        f"{BASE}/reuniones?anio={dt.year}&mes={dt.month}",
+        f"{BASE}/reuniones?year={dt.year}&month={dt.month}",
+        f"{BASE}/reuniones?fecha={date_value}"
+    ]
+
+    for page_url in calendar_pages:
+        try:
+            html = fetch_response(page_url).text
+            urls.update(meeting_urls_from_html(html, date_key))
+        except requests.RequestException:
+            continue
+
+    if not urls:
+        try:
+            home_html = fetch_response(BASE + "/").text
+            urls.update(meeting_urls_from_html(home_html, date_key))
         except requests.RequestException:
             pass
 
-    return sorted(urls)
+    if not urls:
+        urls.update(indexed_meeting_urls(date_value))
+
+    valid_urls = sorted({
+        url for url in urls
+        if url.startswith(BASE + "/reuniones/detalle/")
+        and date_key in url
+    })
+
+    save_meeting_cache(date_value, valid_urls)
+    return valid_urls
+
 
 def meeting_name(soup, fallback="Hipódromo"):
     text = clean(soup.get_text(" "))
@@ -114,6 +233,14 @@ def init_db():
       observaciones TEXT, participantes TEXT NOT NULL, analisis TEXT,
       resultado_real TEXT, creado_en TEXT NOT NULL,
       UNIQUE(fecha,hipodromo,numero)
+    );
+
+    CREATE TABLE IF NOT EXISTS reuniones_cache(
+      fecha TEXT NOT NULL,
+      url TEXT NOT NULL,
+      hipodromo TEXT,
+      actualizado_en TEXT NOT NULL,
+      PRIMARY KEY(fecha, url)
     );
     """)
     con.commit()
@@ -726,7 +853,11 @@ def reuniones():
             })
 
         output.sort(key=lambda x: x["hipodromo"])
-        return jsonify(ok=True, reuniones=output)
+        return jsonify(
+            ok=True,
+            reuniones=output,
+            tipo_busqueda="calendario_e_historial"
+        )
 
     except ValueError:
         return jsonify(ok=False, error="La fecha no es válida."), 400
