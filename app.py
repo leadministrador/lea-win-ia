@@ -243,6 +243,16 @@ def init_db():
       PRIMARY KEY(fecha, url)
     );
     """)
+
+    columns = {
+        row[1]
+        for row in con.execute("PRAGMA table_info(carreras)").fetchall()
+    }
+    if "videos" not in columns:
+        con.execute("ALTER TABLE carreras ADD COLUMN videos TEXT")
+    if "url_carrera" not in columns:
+        con.execute("ALTER TABLE carreras ADD COLUMN url_carrera TEXT")
+
     con.commit()
     con.close()
 
@@ -642,6 +652,7 @@ def parse_race(soup, numero):
         "superficie": get(r"Pista:\s*(.+?)\s*\|\s*Estado:"),
         "estado": get(r"Estado:\s*(.+?)\s*\|\s*Categoria:"),
         "categoria": get(r"Categoria:\s*(.+?)(?:Premios|PROGRAMA|RESULTADOS|$)"),
+        "fecha": race_date,
         "participantes": participants
     }
 
@@ -705,6 +716,80 @@ def extract_exact_videos(soup):
                 }
 
     return list(found.values())
+
+
+
+def current_race_media(race_data):
+    """
+    El video pertenece a la carrera completa. Para encontrar la página
+    individual de esa carrera se usa el perfil de uno de sus participantes.
+    """
+    race_date = race_data.get("fecha", "")
+    race_number = race_data.get("carrera")
+    distance = str(race_data.get("distancia") or "")
+    participants = race_data.get("participantes", [])
+
+    if not race_date or not race_number or not participants:
+        return {"url_carrera": "", "videos": []}
+
+    ordered = sorted(
+        participants,
+        key=lambda horse: (
+            horse.get("posicion_resultado") is None,
+            horse.get("posicion_resultado", 999)
+        )
+    )
+
+    for horse in ordered[:3]:
+        profile = horse.get("perfil", "")
+        if not profile.startswith(BASE + "/ejemplares/"):
+            continue
+
+        try:
+            profile_soup = fetch(profile)
+        except Exception:
+            continue
+
+        for row in profile_soup.find_all("tr"):
+            row_text = clean(row.get_text(" "))
+            if race_date not in row_text:
+                continue
+
+            # Formato del historial:
+            # FECHA HIPÓDROMO N.º CARRERA N.º CABALLO DISTANCIA ...
+            pattern = (
+                re.escape(race_date)
+                + r"\s+\S+\s+"
+                + str(race_number)
+                + r"\s+\d+\s+"
+            )
+            if not re.search(pattern, row_text, re.I):
+                continue
+
+            if distance and not re.search(
+                r"\b" + re.escape(distance) + r"\b",
+                row_text
+            ):
+                continue
+
+            link = row.select_one('a[href*="/reuniones/carrera/"]')
+            if not link:
+                continue
+
+            race_url = urljoin(BASE, link.get("href", ""))
+
+            try:
+                race_soup = fetch(race_url)
+                videos = extract_exact_videos(race_soup)
+            except Exception:
+                videos = []
+
+            return {
+                "url_carrera": race_url,
+                "videos": videos
+            }
+
+    return {"url_carrera": "", "videos": []}
 
 
 def race_information(soup, race_url, horse_name="", result_code=""):
@@ -1004,6 +1089,12 @@ def carrera():
         data = parse_race(fetch(url), int(numero))
         if not data:
             return jsonify(ok=False,error="No se encontró la carrera."),404
+
+        media = current_race_media(data)
+        data["videos"] = media.get("videos", [])
+        data["url_carrera"] = media.get("url_carrera", "")
+        data["url_reunion"] = url
+
         return jsonify(ok=True, **data)
     except Exception as e:
         return jsonify(ok=False,error="No se pudo cargar la carrera.",detalle=str(e)),502
@@ -1069,12 +1160,13 @@ def guardar():
     con.execute("""
     INSERT INTO carreras(fecha,hipodromo,numero,premio,distancia,superficie,
     estado_publicado,condicion,pista_dia,clima,viento,retiros,observaciones,
-    participantes,analisis,resultado_real,creado_en)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    participantes,analisis,resultado_real,videos,url_carrera,creado_en)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(fecha,hipodromo,numero) DO UPDATE SET
     pista_dia=excluded.pista_dia,clima=excluded.clima,viento=excluded.viento,
     retiros=excluded.retiros,observaciones=excluded.observaciones,
     participantes=excluded.participantes,analisis=excluded.analisis,
+    videos=excluded.videos,url_carrera=excluded.url_carrera,
     creado_en=excluded.creado_en
     """,(
       data["fecha"],data["hipodromo"],int(data["numero"]),data.get("premio",""),
@@ -1083,6 +1175,8 @@ def guardar():
       data.get("viento",""),json.dumps(data.get("retiros",[]),ensure_ascii=False),
       data.get("observaciones",""),json.dumps(data["participantes"],ensure_ascii=False),
       json.dumps(data.get("analisis",{}),ensure_ascii=False),"",
+      json.dumps(data.get("videos",[]),ensure_ascii=False),
+      data.get("url_carrera",""),
       datetime.now().isoformat(timespec="seconds")
     ))
     con.commit(); con.close()
