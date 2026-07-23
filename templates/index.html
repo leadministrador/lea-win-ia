@@ -19,7 +19,7 @@ button{width:100%;padding:13px;margin-top:11px;border:0;border-radius:11px;backg
 .fact span{display:block;font-size:10px;color:var(--m);margin-bottom:3px}
 .fact strong{font-size:12px;color:var(--t)}
 .chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
-.chip{font-size:10px;background:#183526;border:1px solid var(--l);padding:4px 7px;border-radius:20px}.official{margin-top:10px;padding:12px;border:1px solid var(--g);border-radius:12px;background:#0a1a11}.official h3{margin:0 0 8px;font-size:15px;color:var(--g)}.official-row{display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--l)}.official-row:last-child{border-bottom:0}.place{display:inline-grid;place-items:center;min-width:38px;height:30px;border-radius:8px;background:var(--g);color:#06100b;font-weight:900}
+.chip{font-size:10px;background:#183526;border:1px solid var(--l);padding:4px 7px;border-radius:20px}.official{margin-top:10px;padding:12px;border:1px solid var(--g);border-radius:12px;background:#0a1a11}.official h3{margin:0 0 8px;font-size:15px;color:var(--g)}.official-row{display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--l)}.official-row:last-child{border-bottom:0}.place{display:inline-grid;place-items:center;min-width:38px;height:30px;border-radius:8px;background:var(--g);color:#06100b;font-weight:900}.race-media{margin-top:14px;padding-top:12px;border-top:1px solid var(--l)}.race-media h3{margin:0 0 9px;color:var(--g)}.race-media iframe{width:100%;aspect-ratio:16/9;height:auto;border:1px solid var(--l);border-radius:10px;background:#000}
 @media(max-width:500px){.facts{grid-template-columns:1fr}}
 .tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px}.tabs button{margin:0;padding:10px 5px;font-size:11px}
 @media(max-width:600px){.grid{grid-template-columns:1fr}.tabs{grid-template-columns:repeat(2,1fr)}}
@@ -60,7 +60,8 @@ async function cargarCarrera(){
  actual={
   fecha:fecha.value,hipodromo:reu.hipodromo,numero:d.carrera,
   premio:d.premio,distancia:d.distancia||null,superficie:d.superficie,
-  estado_publicado:d.estado,condicion:d.condicion,participantes:d.participantes
+  estado_publicado:d.estado,condicion:d.condicion,participantes:d.participantes,
+  videos:d.videos||[],url_carrera:d.url_carrera||'',url_reunion:d.url_reunion||''
  };
  meta.innerHTML=`<b>${d.premio||''}</b><br>${d.distancia||'?'} m · ${d.superficie||''} · ${d.estado||''}`;
  renderResultadoOficial();
@@ -70,18 +71,43 @@ async function cargarCarrera(){
 }
 function renderResultadoOficial(){
  const box=document.getElementById('resultadoOficial');
- if(!actual){box.classList.add('hidden');box.innerHTML='';return}
- const oficiales=actual.participantes
-  .filter(p=>Number.isInteger(p.posicion_resultado))
-  .sort((a,b)=>a.posicion_resultado-b.posicion_resultado);
- if(!oficiales.length){
+ if(!actual){
   box.classList.add('hidden');
   box.innerHTML='';
   return;
  }
+
+ const oficiales=actual.participantes
+  .filter(p=>Number.isInteger(p.posicion_resultado))
+  .sort((a,b)=>a.posicion_resultado-b.posicion_resultado);
+
+ const videos=actual.videos||[];
+
+ if(!oficiales.length && !videos.length){
+  box.classList.add('hidden');
+  box.innerHTML='';
+  return;
+ }
+
+ let contenido='';
+
+ if(oficiales.length){
+  contenido+='<h3>Resultado oficial</h3>'+
+   oficiales.map(p=>`<div class="official-row"><span class="place">${p.posicion_resultado}.º</span><div><b>N.º ${p.numero||'?'} · ${esc(p.nombre)}</b></div></div>`).join('');
+ }
+
+ contenido+='<div class="race-media"><h3>Video de la carrera</h3>';
+
+ if(videos.length){
+  contenido+=videos.map(v=>`<iframe src="${v.embed}" title="Video oficial de la carrera" loading="lazy" allowfullscreen></iframe>`).join('');
+ }else{
+  contenido+='<div class="small">Sin video público asociado todavía en Stud Book.</div>';
+ }
+
+ contenido+='</div>';
+
  box.className='official';
- box.innerHTML='<h3>Resultado oficial</h3>'+
-  oficiales.map(p=>`<div class="official-row"><span class="place">${p.posicion_resultado}.º</span><div><b>N.º ${p.numero||'?'} · ${esc(p.nombre)}</b></div></div>`).join('');
+ box.innerHTML=contenido;
 }
 
 function aplicarRetiros(){if(!actual)return;const set=new Set(retiros.value.split(',').map(x=>x.trim()).filter(Boolean));actual.participantes.forEach(p=>p.retirado=set.has(String(p.numero)));render()}
