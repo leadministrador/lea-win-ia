@@ -568,6 +568,19 @@ def horse_previous_races(horse, limit=12):
                 "error": "No se pudo leer esta carrera."
             })
 
+    def race_sort_key(race):
+        """
+        Ordena primero las carreras con fecha válida y luego las más recientes.
+        Las carreras sin fecha quedan al final.
+        """
+        value = race.get("fecha", "")
+        try:
+            parsed = datetime.strptime(value, "%d/%m/%Y")
+            return (1, parsed)
+        except (TypeError, ValueError):
+            return (0, datetime.min)
+
+    races.sort(key=race_sort_key, reverse=True)
     return races
 
 
