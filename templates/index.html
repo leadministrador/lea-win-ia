@@ -19,7 +19,7 @@ button{width:100%;padding:13px;margin-top:11px;border:0;border-radius:11px;backg
 .fact span{display:block;font-size:10px;color:var(--m);margin-bottom:3px}
 .fact strong{font-size:12px;color:var(--t)}
 .chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
-.chip{font-size:10px;background:#183526;border:1px solid var(--l);padding:4px 7px;border-radius:20px}
+.chip{font-size:10px;background:#183526;border:1px solid var(--l);padding:4px 7px;border-radius:20px}.official{margin-top:10px;padding:12px;border:1px solid var(--g);border-radius:12px;background:#0a1a11}.official h3{margin:0 0 8px;font-size:15px;color:var(--g)}.official-row{display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--l)}.official-row:last-child{border-bottom:0}.place{display:inline-grid;place-items:center;min-width:38px;height:30px;border-radius:8px;background:var(--g);color:#06100b;font-weight:900}
 @media(max-width:500px){.facts{grid-template-columns:1fr}}
 .tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px}.tabs button{margin:0;padding:10px 5px;font-size:11px}
 @media(max-width:600px){.grid{grid-template-columns:1fr}.tabs{grid-template-columns:repeat(2,1fr)}}
@@ -38,7 +38,7 @@ button{width:100%;padding:13px;margin-top:11px;border:0;border-radius:11px;backg
 <div><label>Viento</label><input id="viento" placeholder="Ej.: 25 km/h de frente"></div>
 <div><label>Retiros</label><input id="retiros" placeholder="Ej.: 3, 8" oninput="aplicarRetiros()"></div>
 <div><label>Observaciones</label><input id="observaciones" placeholder="Jockey, herraje, cambios..."></div></div>
-<div id="meta" class="status">Primero cargá una carrera.</div><div id="lista"></div>
+<div id="meta" class="status">Primero cargá una carrera.</div><div id="resultadoOficial" class="hidden"></div><div id="lista"></div>
 <button onclick="enriquecer()">Traer campañas anteriores</button><button onclick="analizar()">Analizar carrera</button></section>
 
 <section id="analisis" class="panel hidden"><h2>Pronóstico LEA</h2><div id="ranking" class="status">Todavía no se analizó.</div>
@@ -50,7 +50,40 @@ let reuniones=[],actual=null,ultimoAnalisis=null;
 function go(id){['buscar','datos','analisis','historial'].forEach(x=>document.getElementById(x).classList.toggle('hidden',x!==id));if(id==='historial')cargarHistorial()}
 async function buscarFecha(){estado.textContent='Buscando carreras del día...';const r=await fetch('/api/reuniones?fecha='+fecha.value);const d=await r.json();if(!d.ok||!d.reuniones.length){seleccion.classList.add('hidden');estado.textContent=d.error||'No hay reuniones.';return}reuniones=d.reuniones;hipodromo.innerHTML=reuniones.map((x,i)=>`<option value="${i}">${x.hipodromo}</option>`).join('');cargarCarreras();seleccion.classList.remove('hidden');estado.textContent='Elegí la carrera.'}
 function cargarCarreras(){const r=reuniones[+hipodromo.value];carrera.innerHTML=r.carreras.map(x=>`<option value="${x.numero}">${x.titulo}</option>`).join('')}
-async function cargarCarrera(){const reu=reuniones[+hipodromo.value];estado.textContent='Cargando participantes...';const q=new URLSearchParams({url:reu.url,numero:carrera.value});const r=await fetch('/api/carrera?'+q);const d=await r.json();if(!d.ok){estado.textContent=d.error;return}actual={fecha:fecha.value,hipodromo:reu.hipodromo,numero:d.carrera,premio:d.premio,distancia:d.distancia||null,superficie:d.superficie,estado_publicado:d.estado,condicion:d.condicion,participantes:d.participantes};meta.innerHTML=`<b>${d.premio||''}</b><br>${d.distancia||'?'} m · ${d.superficie||''} · ${d.estado||''}`;render();estado.textContent=d.participantes.length+' participantes cargados.';go('datos')}
+async function cargarCarrera(){
+ const reu=reuniones[+hipodromo.value];
+ estado.textContent='Cargando participantes...';
+ const q=new URLSearchParams({url:reu.url,numero:carrera.value});
+ const r=await fetch('/api/carrera?'+q);
+ const d=await r.json();
+ if(!d.ok){estado.textContent=d.error;return}
+ actual={
+  fecha:fecha.value,hipodromo:reu.hipodromo,numero:d.carrera,
+  premio:d.premio,distancia:d.distancia||null,superficie:d.superficie,
+  estado_publicado:d.estado,condicion:d.condicion,participantes:d.participantes
+ };
+ meta.innerHTML=`<b>${d.premio||''}</b><br>${d.distancia||'?'} m · ${d.superficie||''} · ${d.estado||''}`;
+ renderResultadoOficial();
+ render();
+ estado.textContent=d.participantes.length+' participantes cargados.';
+ go('datos');
+}
+function renderResultadoOficial(){
+ const box=document.getElementById('resultadoOficial');
+ if(!actual){box.classList.add('hidden');box.innerHTML='';return}
+ const oficiales=actual.participantes
+  .filter(p=>Number.isInteger(p.posicion_resultado))
+  .sort((a,b)=>a.posicion_resultado-b.posicion_resultado);
+ if(!oficiales.length){
+  box.classList.add('hidden');
+  box.innerHTML='';
+  return;
+ }
+ box.className='official';
+ box.innerHTML='<h3>Resultado oficial</h3>'+
+  oficiales.map(p=>`<div class="official-row"><span class="place">${p.posicion_resultado}.º</span><div><b>N.º ${p.numero||'?'} · ${esc(p.nombre)}</b></div></div>`).join('');
+}
+
 function aplicarRetiros(){if(!actual)return;const set=new Set(retiros.value.split(',').map(x=>x.trim()).filter(Boolean));actual.participantes.forEach(p=>p.retirado=set.has(String(p.numero)));render()}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function render(){
@@ -58,7 +91,7 @@ function render(){
   const ultimas=(p.ultimas_8||[]).map(x=>`<span class="chip">${esc(x.codigo||'Carrera')}</span>`).join('');
   const sexoEdad=[p.sexo,p.pelaje,p.edad?`${p.edad} años`:null].filter(Boolean).join(' · ');
   return `<div class="horse ${p.retirado?'retired':''}">
-   <span class="num">${p.numero||'?'}</span><b>${esc(p.nombre)}</b>${p.retirado?' · RETIRADO':''}
+   <span class="num">${p.numero||'?'}</span><b>${esc(p.nombre)}</b>${p.retirado?' · RETIRADO':''}${Number.isInteger(p.posicion_resultado)?` · Resultado: ${p.posicion_resultado}.º`:''}
    <div class="small">${sexoEdad||'Sexo, pelaje y edad: sin detectar'}<br>
    ${p.padre?`Padre: ${esc(p.padre)}<br>`:''}${p.madre?`Madre: ${esc(p.madre)}<br>`:''}
    ${p.campana_resumen?`Campaña: ${esc(p.campana_resumen)}`:esc(p.campana||'')}</div>
