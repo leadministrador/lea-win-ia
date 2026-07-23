@@ -14,6 +14,13 @@ button{width:100%;padding:13px;margin-top:11px;border:0;border-radius:11px;backg
 .status,.horse,.rank{margin-top:8px;padding:11px;border:1px solid var(--l);border-radius:11px;background:var(--d);font-size:13px}
 .horse.retired{opacity:.55;border-color:var(--r)}.num{display:inline-grid;place-items:center;width:34px;height:34px;border-radius:9px;background:var(--g);color:#06100b;font-weight:900;margin-right:8px}
 .small{font-size:12px;color:var(--m);margin-top:4px}.hidden{display:none}.rank b{color:var(--g)}
+.facts{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}
+.fact{background:#0d1b13;border:1px solid var(--l);border-radius:9px;padding:8px}
+.fact span{display:block;font-size:10px;color:var(--m);margin-bottom:3px}
+.fact strong{font-size:12px;color:var(--t)}
+.chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+.chip{font-size:10px;background:#183526;border:1px solid var(--l);padding:4px 7px;border-radius:20px}
+@media(max-width:500px){.facts{grid-template-columns:1fr}}
 .tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px}.tabs button{margin:0;padding:10px 5px;font-size:11px}
 @media(max-width:600px){.grid{grid-template-columns:1fr}.tabs{grid-template-columns:repeat(2,1fr)}}
 </style></head><body>
@@ -46,7 +53,29 @@ function cargarCarreras(){const r=reuniones[+hipodromo.value];carrera.innerHTML=
 async function cargarCarrera(){const reu=reuniones[+hipodromo.value];estado.textContent='Cargando participantes...';const q=new URLSearchParams({url:reu.url,numero:carrera.value});const r=await fetch('/api/carrera?'+q);const d=await r.json();if(!d.ok){estado.textContent=d.error;return}actual={fecha:fecha.value,hipodromo:reu.hipodromo,numero:d.carrera,premio:d.premio,distancia:d.distancia||null,superficie:d.superficie,estado_publicado:d.estado,condicion:d.condicion,participantes:d.participantes};meta.innerHTML=`<b>${d.premio||''}</b><br>${d.distancia||'?'} m · ${d.superficie||''} · ${d.estado||''}`;render();estado.textContent=d.participantes.length+' participantes cargados.';go('datos')}
 function aplicarRetiros(){if(!actual)return;const set=new Set(retiros.value.split(',').map(x=>x.trim()).filter(Boolean));actual.participantes.forEach(p=>p.retirado=set.has(String(p.numero)));render()}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function render(){lista.innerHTML=actual.participantes.map((p,i)=>`<div class="horse ${p.retirado?'retired':''}"><span class="num">${p.numero||'?'}</span><b>${esc(p.nombre)}</b>${p.retirado?' · RETIRADO':''}<div class="small">${p.padre?`Padre: ${esc(p.padre)}<br>`:''}${p.madre?`Madre: ${esc(p.madre)}<br>`:''}${p.campana_resumen?`Campaña: ${esc(p.campana_resumen)}`:esc(p.campana||'')}</div><button class="secondary" onclick="cargarCarrerasVideos(${i})">Carreras anteriores y videos</button><div id="historial-${i}"></div></div>`).join('')}
+function render(){
+ lista.innerHTML=actual.participantes.map((p,i)=>{
+  const ultimas=(p.ultimas_8||[]).map(x=>`<span class="chip">${esc(x.codigo||'Carrera')}</span>`).join('');
+  const sexoEdad=[p.sexo,p.pelaje,p.edad?`${p.edad} años`:null].filter(Boolean).join(' · ');
+  return `<div class="horse ${p.retirado?'retired':''}">
+   <span class="num">${p.numero||'?'}</span><b>${esc(p.nombre)}</b>${p.retirado?' · RETIRADO':''}
+   <div class="small">${sexoEdad||'Sexo, pelaje y edad: sin detectar'}<br>
+   ${p.padre?`Padre: ${esc(p.padre)}<br>`:''}${p.madre?`Madre: ${esc(p.madre)}<br>`:''}
+   ${p.campana_resumen?`Campaña: ${esc(p.campana_resumen)}`:esc(p.campana||'')}</div>
+   <div class="facts">
+    <div class="fact"><span>Jockey</span><strong>${esc(p.jockey||'Sin detectar')}</strong></div>
+    <div class="fact"><span>Peso que carga</span><strong>${p.peso_jockey?`${esc(p.peso_jockey)} kg`:'Sin detectar'}</strong></div>
+    <div class="fact"><span>Entrenador</span><strong>${esc(p.entrenador||'Sin detectar')}</strong></div>
+    <div class="fact"><span>Caballeriza</span><strong>${esc(p.caballeriza||'Sin detectar')}</strong></div>
+    <div class="fact"><span>Peso corporal</span><strong>${p.peso_caballo?`${esc(p.peso_caballo)} kg`:'Sin detectar'}</strong></div>
+    <div class="fact"><span>Días sin correr</span><strong>${p.dias_sin_correr??'Se calcula al traer campaña'}</strong></div>
+   </div>
+   ${ultimas?`<div class="small">Últimas actuaciones</div><div class="chips">${ultimas}</div>`:''}
+   <button class="secondary" onclick="cargarCarrerasVideos(${i})">Carreras anteriores y videos</button>
+   <div id="historial-${i}"></div>
+  </div>`;
+ }).join('');
+}
 async function enriquecer(){estado.textContent='Cargando campañas...';const r=await fetch('/api/enriquecer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({participantes:actual.participantes})});const d=await r.json();actual.participantes=d.participantes;render();estado.textContent='Campañas anteriores incorporadas.'}
 async function analizar(){aplicarRetiros();const body={...actual,pista_dia:pistaDia.value,clima:clima.value,viento:viento.value,observaciones:observaciones.value};const r=await fetch('/api/analizar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!d.ok){ranking.textContent=d.error;go('analisis');return}ultimoAnalisis=d;ranking.innerHTML=d.ranking.map((x,i)=>`<div class="rank"><b>${i+1}.º · N.º ${x.numero||'?'} — ${x.nombre}</b><br>Score: ${x.score}/100 · Probabilidad relativa: ${x.probabilidad_relativa}%<div class="small">${x.motivos.join(' · ')||'Sin motivos suficientes detectados'}</div></div>`).join('');go('analisis')}
 async function guardar(){if(!actual||!ultimoAnalisis){ranking.textContent='Primero analizá la carrera.';return}const body={...actual,pista_dia:pistaDia.value,clima:clima.value,viento:viento.value,retiros:actual.participantes.filter(x=>x.retirado).map(x=>x.numero),observaciones:observaciones.value,analisis:ultimoAnalisis};const r=await fetch('/api/guardar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();ranking.innerHTML+=`<div class="status">${d.mensaje||d.error}</div>`}
