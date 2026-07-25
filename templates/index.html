@@ -32,12 +32,16 @@ button{width:100%;padding:13px;margin-top:11px;border:0;border-radius:11px;backg
 <div id="seleccion" class="hidden"><label>Hipódromo</label><select id="hipodromo" onchange="cargarCarreras()"></select>
 <label>Carrera</label><select id="carrera"></select><button onclick="cargarCarrera()">Cargar carrera</button></div></section>
 
-<section id="datos" class="panel hidden"><h2>Datos del día</h2><div class="grid">
-<div><label>Pista actual</label><select id="pistaDia"><option>Sin confirmar</option><option>Normal</option><option>Húmeda</option><option>Pesada</option><option>Barrosa</option></select></div>
-<div><label>Clima</label><select id="clima"><option>Sin confirmar</option><option>Despejado</option><option>Nublado</option><option>Lluvia</option><option>Viento</option></select></div>
-<div><label>Viento</label><input id="viento" placeholder="Ej.: 25 km/h de frente"></div>
+<section id="datos" class="panel hidden"><h2>Datos previos de la carrera</h2>
+<div class="small">Los valores vienen precargados y se pueden modificar antes de analizar.</div>
+<div class="grid">
+<div><label>Estado de pista</label><select id="pistaDia"><option selected>Normal</option><option>Húmeda</option><option>Pesada</option><option>Barrosa</option><option>Sin confirmar</option></select></div>
+<div><label>Clima</label><select id="clima"><option selected>Despejado</option><option>Nublado</option><option>Lluvia leve</option><option>Lluvia</option><option>Tormenta</option><option>Sin confirmar</option></select></div>
+<div><label>Viento</label><select id="viento"><option selected>Sin viento</option><option>Suave</option><option>Moderado</option><option>Fuerte</option><option>Sin confirmar</option></select></div>
+<div><label>Dirección del viento</label><select id="direccionViento"><option selected>Sin dirección</option><option>De frente</option><option>De cola</option><option>Lateral</option><option>Variable</option><option>Sin confirmar</option></select></div>
+<div><label>Temperatura</label><select id="temperatura"><option selected>Normal</option><option>Fría</option><option>Calurosa</option><option>Muy calurosa</option><option>Sin confirmar</option></select></div>
 <div><label>Retiros</label><input id="retiros" placeholder="Ej.: 3, 8" oninput="aplicarRetiros()"></div>
-<div><label>Observaciones</label><input id="observaciones" placeholder="Jockey, herraje, cambios..."></div></div>
+<div><label>Observaciones</label><input id="observaciones" placeholder="Cambios generales de último momento"></div></div>
 <div id="meta" class="status">Primero cargá una carrera.</div><div id="resultadoOficial" class="hidden"></div><div id="lista"></div>
 <button onclick="enriquecer()">Traer campañas anteriores</button><button onclick="analizar()">Analizar carrera</button></section>
 
@@ -63,6 +67,13 @@ async function cargarCarrera(){
   estado_publicado:d.estado,condicion:d.condicion,participantes:d.participantes,
   videos:d.videos||[],url_carrera:d.url_carrera||'',url_reunion:d.url_reunion||''
  };
+ pistaDia.value='Normal';
+ clima.value='Despejado';
+ viento.value='Sin viento';
+ direccionViento.value='Sin dirección';
+ temperatura.value='Normal';
+ retiros.value='';
+ observaciones.value='';
  meta.innerHTML=`<b>${d.premio||''}</b><br>${d.distancia||'?'} m · ${d.superficie||''} · ${d.estado||''}`;
  renderResultadoOficial();
  render();
@@ -136,8 +147,8 @@ function render(){
  }).join('');
 }
 async function enriquecer(){estado.textContent='Cargando campañas...';const r=await fetch('/api/enriquecer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({participantes:actual.participantes})});const d=await r.json();actual.participantes=d.participantes;render();estado.textContent='Campañas anteriores incorporadas.'}
-async function analizar(){aplicarRetiros();const body={...actual,pista_dia:pistaDia.value,clima:clima.value,viento:viento.value,observaciones:observaciones.value};const r=await fetch('/api/analizar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!d.ok){ranking.textContent=d.error;go('analisis');return}ultimoAnalisis=d;ranking.innerHTML=d.ranking.map((x,i)=>`<div class="rank"><b>${i+1}.º · N.º ${x.numero||'?'} — ${x.nombre}</b><br>Score: ${x.score}/100 · Probabilidad relativa: ${x.probabilidad_relativa}%<div class="small">${x.motivos.join(' · ')||'Sin motivos suficientes detectados'}</div></div>`).join('');go('analisis')}
-async function guardar(){if(!actual||!ultimoAnalisis){ranking.textContent='Primero analizá la carrera.';return}const body={...actual,pista_dia:pistaDia.value,clima:clima.value,viento:viento.value,retiros:actual.participantes.filter(x=>x.retirado).map(x=>x.numero),observaciones:observaciones.value,analisis:ultimoAnalisis};const r=await fetch('/api/guardar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();ranking.innerHTML+=`<div class="status">${d.mensaje||d.error}</div>`}
+async function analizar(){aplicarRetiros();const body={...actual,pista_dia:pistaDia.value,clima:clima.value,viento:viento.value,direccion_viento:direccionViento.value,temperatura:temperatura.value,observaciones:observaciones.value};const r=await fetch('/api/analizar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!d.ok){ranking.textContent=d.error;go('analisis');return}ultimoAnalisis=d;ranking.innerHTML=d.ranking.map((x,i)=>`<div class="rank"><b>${i+1}.º · N.º ${x.numero||'?'} — ${x.nombre}</b><br>Score: ${x.score}/100 · Probabilidad relativa: ${x.probabilidad_relativa}%<div class="small">${x.motivos.join(' · ')||'Sin motivos suficientes detectados'}</div></div>`).join('');go('analisis')}
+async function guardar(){if(!actual||!ultimoAnalisis){ranking.textContent='Primero analizá la carrera.';return}const body={...actual,pista_dia:pistaDia.value,clima:clima.value,viento:viento.value,direccion_viento:direccionViento.value,temperatura:temperatura.value,retiros:actual.participantes.filter(x=>x.retirado).map(x=>x.numero),observaciones:observaciones.value,analisis:ultimoAnalisis};const r=await fetch('/api/guardar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();ranking.innerHTML+=`<div class="status">${d.mensaje||d.error}</div>`}
 async function cargarHistorial(){const r=await fetch('/api/historial');const d=await r.json();historialLista.innerHTML=d.carreras.map(x=>`<div class="horse"><b>${x.fecha} · ${x.hipodromo} · Carrera ${x.numero}</b><br>${x.premio||''}</div>`).join('')}
 async function cargarCarrerasVideos(i){
  const caballo=actual.participantes[i];
