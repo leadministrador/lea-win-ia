@@ -242,6 +242,11 @@ def init_db():
       actualizado_en TEXT NOT NULL,
       PRIMARY KEY(fecha, url)
     );
+
+    CREATE TABLE IF NOT EXISTS herraje_codigos(
+      codigo TEXT PRIMARY KEY,
+      creado_en TEXT NOT NULL
+    );
     """)
 
     columns = {
@@ -1003,6 +1008,14 @@ def enrich_horse(horse):
         if latest_eight:
             horse["ultima_actuacion"] = latest_eight[0]["fecha"]
 
+            previous_row = latest_eight[0]["detalle"]
+            body_weights = [
+                value for value in re.findall(r"\b(\d{3})\b", previous_row)
+                if 300 <= int(value) <= 700
+            ]
+            if body_weights:
+                horse["peso_caballo_anterior"] = body_weights[-1]
+
             if current_date:
                 horse["dias_sin_correr"] = (
                     current_date - latest_eight[0]["fecha_orden"]
@@ -1153,6 +1166,115 @@ def carreras_videos():
         total_carreras=len(races),
         total_videos=videos_count
     )
+
+
+
+@app.get("/api/herrajes")
+def herrajes():
+    con = db()
+    rows = con.execute(
+        "SELECT codigo FROM herraje_codigos ORDER BY codigo"
+    ).fetchall()
+    con.close()
+    return jsonify(ok=True, codigos=[row["codigo"] for row in rows])
+
+
+@app.post("/api/herrajes")
+def guardar_herraje():
+    data = request.get_json(silent=True) or {}
+    codigo = clean(data.get("codigo", ""))
+    if not codigo:
+        return jsonify(ok=False, error="Ingresá un código de herraje."), 400
+    if len(codigo) > 30:
+        return jsonify(ok=False, error="El código es demasiado largo."), 400
+
+    con = db()
+    con.execute(
+        """
+        INSERT INTO herraje_codigos(codigo,creado_en)
+        VALUES(?,?)
+        ON CONFLICT(codigo) DO NOTHING
+        """,
+        (codigo, datetime.now().isoformat(timespec="seconds"))
+    )
+    con.commit()
+    con.close()
+    return jsonify(ok=True, codigo=codigo, mensaje="Código guardado.")
+
+
+@app.get("/api/datos-guardados")
+def datos_guardados():
+    fecha = request.args.get("fecha", "").strip()
+    hipodromo = request.args.get("hipodromo", "").strip()
+    numero = request.args.get("numero", "").strip()
+
+    if not fecha or not hipodromo or not numero.isdigit():
+        return jsonify(ok=False, error="Datos incompletos."), 400
+
+    con = db()
+    row = con.execute(
+        """
+        SELECT pista_dia,clima,viento,direccion_viento,temperatura,
+               retiros,observaciones,participantes
+        FROM carreras
+        WHERE fecha=? AND hipodromo=? AND numero=?
+        """,
+        (fecha, hipodromo, int(numero))
+    ).fetchone()
+    con.close()
+
+    if not row:
+        return jsonify(ok=True, encontrado=False)
+
+    result = dict(row)
+    for key, default in (("retiros", []), ("participantes", [])):
+        try:
+            result[key] = json.loads(result.get(key) or "")
+        except (TypeError, json.JSONDecodeError):
+            result[key] = default
+
+    return jsonify(ok=True, encontrado=True, datos=result)
+
+
+@app.post("/api/guardar-datos")
+def guardar_datos():
+    data = request.get_json(silent=True) or {}
+    if not all(data.get(k) for k in ["fecha", "hipodromo", "numero", "participantes"]):
+        return jsonify(ok=False, error="Faltan datos de la carrera."), 400
+
+    con = db()
+    con.execute(
+        """
+        INSERT INTO carreras(fecha,hipodromo,numero,premio,distancia,superficie,
+        estado_publicado,condicion,pista_dia,clima,viento,direccion_viento,temperatura,
+        retiros,observaciones,participantes,analisis,resultado_real,videos,url_carrera,creado_en)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(fecha,hipodromo,numero) DO UPDATE SET
+        pista_dia=excluded.pista_dia,clima=excluded.clima,viento=excluded.viento,
+        direccion_viento=excluded.direccion_viento,temperatura=excluded.temperatura,
+        retiros=excluded.retiros,observaciones=excluded.observaciones,
+        participantes=excluded.participantes,videos=excluded.videos,
+        url_carrera=excluded.url_carrera,creado_en=excluded.creado_en
+        """,
+        (
+            data["fecha"], data["hipodromo"], int(data["numero"]),
+            data.get("premio", ""), data.get("distancia"),
+            data.get("superficie", ""), data.get("estado_publicado", ""),
+            data.get("condicion", ""), data.get("pista_dia", ""),
+            data.get("clima", ""), data.get("viento", ""),
+            data.get("direccion_viento", ""), data.get("temperatura", ""),
+            json.dumps(data.get("retiros", []), ensure_ascii=False),
+            data.get("observaciones", ""),
+            json.dumps(data["participantes"], ensure_ascii=False),
+            json.dumps({}, ensure_ascii=False), "",
+            json.dumps(data.get("videos", []), ensure_ascii=False),
+            data.get("url_carrera", ""),
+            datetime.now().isoformat(timespec="seconds")
+        )
+    )
+    con.commit()
+    con.close()
+    return jsonify(ok=True, mensaje="Datos previos guardados.")
 
 
 @app.post("/api/guardar")
