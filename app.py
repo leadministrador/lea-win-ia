@@ -252,6 +252,10 @@ def init_db():
         con.execute("ALTER TABLE carreras ADD COLUMN videos TEXT")
     if "url_carrera" not in columns:
         con.execute("ALTER TABLE carreras ADD COLUMN url_carrera TEXT")
+    if "direccion_viento" not in columns:
+        con.execute("ALTER TABLE carreras ADD COLUMN direccion_viento TEXT")
+    if "temperatura" not in columns:
+        con.execute("ALTER TABLE carreras ADD COLUMN temperatura TEXT")
 
     con.commit()
     con.close()
@@ -1159,11 +1163,12 @@ def guardar():
     con = db()
     con.execute("""
     INSERT INTO carreras(fecha,hipodromo,numero,premio,distancia,superficie,
-    estado_publicado,condicion,pista_dia,clima,viento,retiros,observaciones,
-    participantes,analisis,resultado_real,videos,url_carrera,creado_en)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    estado_publicado,condicion,pista_dia,clima,viento,direccion_viento,temperatura,
+    retiros,observaciones,participantes,analisis,resultado_real,videos,url_carrera,creado_en)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(fecha,hipodromo,numero) DO UPDATE SET
     pista_dia=excluded.pista_dia,clima=excluded.clima,viento=excluded.viento,
+    direccion_viento=excluded.direccion_viento,temperatura=excluded.temperatura,
     retiros=excluded.retiros,observaciones=excluded.observaciones,
     participantes=excluded.participantes,analisis=excluded.analisis,
     videos=excluded.videos,url_carrera=excluded.url_carrera,
@@ -1172,7 +1177,8 @@ def guardar():
       data["fecha"],data["hipodromo"],int(data["numero"]),data.get("premio",""),
       data.get("distancia"),data.get("superficie",""),data.get("estado_publicado",""),
       data.get("condicion",""),data.get("pista_dia",""),data.get("clima",""),
-      data.get("viento",""),json.dumps(data.get("retiros",[]),ensure_ascii=False),
+      data.get("viento",""),data.get("direccion_viento",""),data.get("temperatura",""),
+      json.dumps(data.get("retiros",[]),ensure_ascii=False),
       data.get("observaciones",""),json.dumps(data["participantes"],ensure_ascii=False),
       json.dumps(data.get("analisis",{}),ensure_ascii=False),"",
       json.dumps(data.get("videos",[]),ensure_ascii=False),
