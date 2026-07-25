@@ -19,8 +19,15 @@ button{width:100%;padding:13px;margin-top:11px;border:0;border-radius:11px;backg
 .fact span{display:block;font-size:10px;color:var(--m);margin-bottom:3px}
 .fact strong{font-size:12px;color:var(--t)}
 .chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+.chip{font-size:10px;background:#183526;border:1px solid var(--l);padding:4px 7px;border-radius:20px}
+.manual{margin-top:10px;padding:10px;border:1px solid var(--l);border-radius:11px;background:#0a1710}
+.manual-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.checks{display:grid;grid-template-columns:repeat(2,1fr);gap:5px;margin-top:6px}
+.check{display:flex;align-items:center;gap:6px;padding:7px;border:1px solid var(--l);border-radius:8px;background:var(--d);font-size:11px}
+.check input{width:auto;margin:0}.inline{display:grid;grid-template-columns:1fr auto;gap:6px}.inline button{width:auto;margin:0;padding:10px}
+.value-note{font-size:11px;color:var(--m);margin-top:5px}
 .chip{font-size:10px;background:#183526;border:1px solid var(--l);padding:4px 7px;border-radius:20px}.official{margin-top:10px;padding:12px;border:1px solid var(--g);border-radius:12px;background:#0a1a11}.official h3{margin:0 0 8px;font-size:15px;color:var(--g)}.official-row{display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--l)}.official-row:last-child{border-bottom:0}.place{display:inline-grid;place-items:center;min-width:38px;height:30px;border-radius:8px;background:var(--g);color:#06100b;font-weight:900}.race-media{margin-top:14px;padding-top:12px;border-top:1px solid var(--l)}.race-media h3{margin:0 0 9px;color:var(--g)}.race-media iframe{width:100%;aspect-ratio:16/9;height:auto;border:1px solid var(--l);border-radius:10px;background:#000}
-@media(max-width:500px){.facts{grid-template-columns:1fr}}
+@media(max-width:500px){.facts,.manual-grid,.checks{grid-template-columns:1fr}}
 .tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px}.tabs button{margin:0;padding:10px 5px;font-size:11px}
 @media(max-width:600px){.grid{grid-template-columns:1fr}.tabs{grid-template-columns:repeat(2,1fr)}}
 </style></head><body>
@@ -42,7 +49,9 @@ button{width:100%;padding:13px;margin-top:11px;border:0;border-radius:11px;backg
 <div><label>Temperatura</label><select id="temperatura"><option selected>Normal</option><option>Fría</option><option>Calurosa</option><option>Muy calurosa</option><option>Sin confirmar</option></select></div>
 <div><label>Retiros</label><input id="retiros" placeholder="Ej.: 3, 8" oninput="aplicarRetiros()"></div>
 <div><label>Observaciones</label><input id="observaciones" placeholder="Cambios generales de último momento"></div></div>
-<div id="meta" class="status">Primero cargá una carrera.</div><div id="resultadoOficial" class="hidden"></div><div id="lista"></div>
+<div id="meta" class="status">Primero cargá una carrera.</div><div id="resultadoOficial" class="hidden"></div>
+<datalist id="jockeysCarrera"></datalist><datalist id="herrajesLista"></datalist><div id="lista"></div>
+<button class="secondary" onclick="guardarDatosPrevios()">Guardar datos previos</button>
 <button onclick="enriquecer()">Traer campañas anteriores</button><button onclick="analizar()">Analizar carrera</button></section>
 
 <section id="analisis" class="panel hidden"><h2>Pronóstico LEA</h2><div id="ranking" class="status">Todavía no se analizó.</div>
@@ -50,7 +59,8 @@ button{width:100%;padding:13px;margin-top:11px;border:0;border-radius:11px;backg
 
 <section id="historial" class="panel hidden"><h2>Historial</h2><button onclick="cargarHistorial()">Actualizar</button><div id="historialLista"></div></section>
 </main><script>
-let reuniones=[],actual=null,ultimoAnalisis=null;
+let reuniones=[],actual=null,ultimoAnalisis=null,herrajesCodigos=[];
+const OBS_CABALLO=['Normal','Muy activo','Nervioso','Apático','Sudoración excesiva','Bajo estado corporal','Sobrepeso aparente','Dificultad al caminar','Indócil','Problemas en la gatera','Demora en ingresar a pista','Golpe o inconveniente previo','Cambio de equipo','Otro'];
 function go(id){['buscar','datos','analisis','historial'].forEach(x=>document.getElementById(x).classList.toggle('hidden',x!==id));if(id==='historial')cargarHistorial()}
 async function buscarFecha(){estado.textContent='Buscando carreras del día...';const r=await fetch('/api/reuniones?fecha='+fecha.value);const d=await r.json();if(!d.ok||!d.reuniones.length){seleccion.classList.add('hidden');estado.textContent=d.error||'No hay reuniones.';return}reuniones=d.reuniones;hipodromo.innerHTML=reuniones.map((x,i)=>`<option value="${i}">${x.hipodromo}</option>`).join('');cargarCarreras();seleccion.classList.remove('hidden');estado.textContent='Elegí la carrera.'}
 function cargarCarreras(){const r=reuniones[+hipodromo.value];carrera.innerHTML=r.carreras.map(x=>`<option value="${x.numero}">${x.titulo}</option>`).join('')}
@@ -64,7 +74,15 @@ async function cargarCarrera(){
  actual={
   fecha:fecha.value,hipodromo:reu.hipodromo,numero:d.carrera,
   premio:d.premio,distancia:d.distancia||null,superficie:d.superficie,
-  estado_publicado:d.estado,condicion:d.condicion,participantes:d.participantes,
+  estado_publicado:d.estado,condicion:d.condicion,
+  participantes:d.participantes.map(p=>({
+   ...p,cambio_monta:p.cambio_monta||'No',nuevo_jockey:p.nuevo_jockey||'',
+   ajuste_peso:p.ajuste_peso??0,herraje:p.herraje||'',
+   peso_caballo_actual:p.peso_caballo_actual||p.peso_caballo||'',
+   peso_caballo_anterior:p.peso_caballo_anterior||'',
+   observaciones_caballo:Array.isArray(p.observaciones_caballo)?p.observaciones_caballo:[],
+   otro_detalle:p.otro_detalle||''
+  })),
   videos:d.videos||[],url_carrera:d.url_carrera||'',url_reunion:d.url_reunion||''
  };
  pistaDia.value='Normal';
@@ -75,6 +93,7 @@ async function cargarCarrera(){
  retiros.value='';
  observaciones.value='';
  meta.innerHTML=`<b>${d.premio||''}</b><br>${d.distancia||'?'} m · ${d.superficie||''} · ${d.estado||''}`;
+ await cargarDatosGuardados();
  renderResultadoOficial();
  render();
  estado.textContent=d.participantes.length+' participantes cargados.';
@@ -121,12 +140,77 @@ function renderResultadoOficial(){
  box.innerHTML=contenido;
 }
 
+
+async function cargarHerrajes(){
+ try{
+  const r=await fetch('/api/herrajes');const d=await r.json();
+  herrajesCodigos=d.codigos||[];
+  herrajesLista.innerHTML=herrajesCodigos.map(x=>`<option value="${esc(x)}"></option>`).join('');
+ }catch(e){}
+}
+function datosCarrera(){
+ aplicarRetiros();
+ return {...actual,pista_dia:pistaDia.value,clima:clima.value,viento:viento.value,direccion_viento:direccionViento.value,temperatura:temperatura.value,retiros:actual.participantes.filter(x=>x.retirado).map(x=>x.numero),observaciones:observaciones.value};
+}
+async function cargarDatosGuardados(){
+ try{
+  const q=new URLSearchParams({fecha:actual.fecha,hipodromo:actual.hipodromo,numero:actual.numero});
+  const r=await fetch('/api/datos-guardados?'+q);const d=await r.json();
+  if(!d.ok||!d.encontrado)return;
+  const g=d.datos||{};
+  if(g.pista_dia)pistaDia.value=g.pista_dia;if(g.clima)clima.value=g.clima;
+  if(g.viento)viento.value=g.viento;if(g.direccion_viento)direccionViento.value=g.direccion_viento;
+  if(g.temperatura)temperatura.value=g.temperatura;observaciones.value=g.observaciones||'';
+  retiros.value=(g.retiros||[]).join(', ');
+  const guardados=new Map((g.participantes||[]).map(p=>[String(p.numero)+'|'+String(p.nombre||'').toUpperCase(),p]));
+  const campos=['cambio_monta','nuevo_jockey','ajuste_peso','herraje','peso_caballo_actual','peso_caballo_anterior','observaciones_caballo','otro_detalle'];
+  actual.participantes.forEach(p=>{
+   const old=guardados.get(String(p.numero)+'|'+String(p.nombre||'').toUpperCase());
+   if(!old)return;campos.forEach(c=>{if(old[c]!==undefined)p[c]=old[c]});
+  });
+  aplicarRetiros();
+ }catch(e){}
+}
+async function guardarDatosPrevios(){
+ if(!actual)return;
+ const r=await fetch('/api/guardar-datos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(datosCarrera())});
+ const d=await r.json();meta.innerHTML+=`<div class="small">${esc(d.mensaje||d.error)}</div>`;
+}
+function toggleManual(i){document.getElementById('manual-'+i).classList.toggle('hidden')}
+function setCampo(i,campo,valor){
+ const p=actual.participantes[i];
+ if(campo==='ajuste_peso')p[campo]=valor===''?0:Number(valor);else p[campo]=valor;
+ if(campo==='cambio_monta'&&valor==='No')p.nuevo_jockey='';
+ render();
+ const box=document.getElementById('manual-'+i);if(box)box.classList.remove('hidden');
+}
+function cambioObservacion(i,valor,marcado){
+ const p=actual.participantes[i];let arr=Array.isArray(p.observaciones_caballo)?[...p.observaciones_caballo]:[];
+ if(marcado){if(valor==='Normal')arr=['Normal'];else{arr=arr.filter(x=>x!=='Normal');if(!arr.includes(valor))arr.push(valor)}}
+ else arr=arr.filter(x=>x!==valor);
+ p.observaciones_caballo=arr;render();document.getElementById('manual-'+i).classList.remove('hidden');
+}
+function variacionPeso(p){
+ const a=Number(p.peso_caballo_actual),b=Number(p.peso_caballo_anterior);
+ if(!a||!b)return 'Sin calcular';const d=a-b;return `${d>0?'+':''}${d} kg`;
+}
+function pesoConSigno(v){const n=Number(v||0);return `${n>0?'+':''}${n} kg`}
+async function guardarCodigoHerraje(i){
+ const input=document.getElementById('herraje-'+i);const codigo=input.value.trim();
+ if(!codigo)return;
+ const r=await fetch('/api/herrajes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({codigo})});
+ const d=await r.json();if(d.ok){actual.participantes[i].herraje=codigo;await cargarHerrajes();input.value=codigo}
+}
+
 function aplicarRetiros(){if(!actual)return;const set=new Set(retiros.value.split(',').map(x=>x.trim()).filter(Boolean));actual.participantes.forEach(p=>p.retirado=set.has(String(p.numero)));render()}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function render(){
+ jockeysCarrera.innerHTML=[...new Set(actual.participantes.map(p=>p.jockey).filter(Boolean))].map(x=>`<option value="${esc(x)}"></option>`).join('');
+ herrajesLista.innerHTML=herrajesCodigos.map(x=>`<option value="${esc(x)}"></option>`).join('');
  lista.innerHTML=actual.participantes.map((p,i)=>{
   const ultimas=(p.ultimas_8||[]).map(x=>`<span class="chip">${esc(x.codigo||'Carrera')}</span>`).join('');
   const sexoEdad=[p.sexo,p.pelaje,p.edad?`${p.edad} años`:null].filter(Boolean).join(' · ');
+  const observaciones=OBS_CABALLO.map(o=>`<label class="check"><input type="checkbox" ${p.observaciones_caballo?.includes(o)?'checked':''} onchange="cambioObservacion(${i},'${o.replace(/'/g,"\\'")}',this.checked)">${esc(o)}</label>`).join('');
   return `<div class="horse ${p.retirado?'retired':''}">
    <span class="num">${p.numero||'?'}</span><b>${esc(p.nombre)}</b>${p.retirado?' · RETIRADO':''}${Number.isInteger(p.posicion_resultado)?` · Resultado: ${p.posicion_resultado}.º`:''}
    <div class="small">${sexoEdad||'Sexo, pelaje y edad: sin detectar'}<br>
@@ -134,11 +218,24 @@ function render(){
    ${p.campana_resumen?`Campaña: ${esc(p.campana_resumen)}`:esc(p.campana||'')}</div>
    <div class="facts">
     <div class="fact"><span>Jockey</span><strong>${esc(p.jockey||'Sin detectar')}</strong></div>
-    <div class="fact"><span>Peso que carga</span><strong>${p.peso_jockey?`${esc(p.peso_jockey)} kg`:'Sin detectar'}</strong></div>
+    <div class="fact"><span>Peso oficial</span><strong>${p.peso_jockey?`${esc(p.peso_jockey)} kg`:'Sin detectar'}</strong></div>
     <div class="fact"><span>Entrenador</span><strong>${esc(p.entrenador||'Sin detectar')}</strong></div>
     <div class="fact"><span>Caballeriza</span><strong>${esc(p.caballeriza||'Sin detectar')}</strong></div>
-    <div class="fact"><span>Peso corporal</span><strong>${p.peso_caballo?`${esc(p.peso_caballo)} kg`:'Sin detectar'}</strong></div>
+    <div class="fact"><span>Peso corporal</span><strong>${p.peso_caballo_actual?`${esc(p.peso_caballo_actual)} kg`:'Sin detectar'}</strong></div>
     <div class="fact"><span>Días sin correr</span><strong>${p.dias_sin_correr??'Se calcula al traer campaña'}</strong></div>
+   </div>
+   <button class="secondary" onclick="toggleManual(${i})">Datos manuales del caballo</button>
+   <div id="manual-${i}" class="manual hidden">
+    <div class="manual-grid">
+     <div><label>Cambio de monta</label><select onchange="setCampo(${i},'cambio_monta',this.value)"><option ${p.cambio_monta!=='Sí'?'selected':''}>No</option><option ${p.cambio_monta==='Sí'?'selected':''}>Sí</option></select></div>
+     <div class="${p.cambio_monta==='Sí'?'':'hidden'}"><label>Nuevo jockey</label><input list="jockeysCarrera" value="${esc(p.nuevo_jockey||'')}" placeholder="Elegir o escribir" onchange="setCampo(${i},'nuevo_jockey',this.value)"></div>
+     <div><label>Peso</label><input type="number" step="0.5" value="${Number(p.ajuste_peso||0)}" placeholder="-2 / 0 / +3" onchange="setCampo(${i},'ajuste_peso',this.value)"><div class="value-note">Actual: ${pesoConSigno(p.ajuste_peso)}</div></div>
+     <div><label>Herraje</label><div class="inline"><input id="herraje-${i}" list="herrajesLista" value="${esc(p.herraje||'')}" placeholder="Código informado" onchange="setCampo(${i},'herraje',this.value)"><button class="secondary" onclick="guardarCodigoHerraje(${i})">Guardar código</button></div></div>
+     <div><label>Peso corporal actual</label><input type="number" step="1" value="${esc(p.peso_caballo_actual||'')}" placeholder="kg" onchange="setCampo(${i},'peso_caballo_actual',this.value)"></div>
+     <div><label>Peso corporal anterior</label><input type="number" step="1" value="${esc(p.peso_caballo_anterior||'')}" placeholder="Se completa con campaña" onchange="setCampo(${i},'peso_caballo_anterior',this.value)"><div class="value-note">Variación: ${variacionPeso(p)}</div></div>
+    </div>
+    <label>Observaciones</label><div class="checks">${observaciones}</div>
+    <label>Otro detalle</label><input value="${esc(p.otro_detalle||'')}" placeholder="Detalle corto opcional" onchange="setCampo(${i},'otro_detalle',this.value)">
    </div>
    ${ultimas?`<div class="small">Últimas actuaciones</div><div class="chips">${ultimas}</div>`:''}
    <button class="secondary" onclick="cargarCarrerasVideos(${i})">Carreras anteriores y videos</button>
@@ -147,8 +244,8 @@ function render(){
  }).join('');
 }
 async function enriquecer(){estado.textContent='Cargando campañas...';const r=await fetch('/api/enriquecer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({participantes:actual.participantes})});const d=await r.json();actual.participantes=d.participantes;render();estado.textContent='Campañas anteriores incorporadas.'}
-async function analizar(){aplicarRetiros();const body={...actual,pista_dia:pistaDia.value,clima:clima.value,viento:viento.value,direccion_viento:direccionViento.value,temperatura:temperatura.value,observaciones:observaciones.value};const r=await fetch('/api/analizar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!d.ok){ranking.textContent=d.error;go('analisis');return}ultimoAnalisis=d;ranking.innerHTML=d.ranking.map((x,i)=>`<div class="rank"><b>${i+1}.º · N.º ${x.numero||'?'} — ${x.nombre}</b><br>Score: ${x.score}/100 · Probabilidad relativa: ${x.probabilidad_relativa}%<div class="small">${x.motivos.join(' · ')||'Sin motivos suficientes detectados'}</div></div>`).join('');go('analisis')}
-async function guardar(){if(!actual||!ultimoAnalisis){ranking.textContent='Primero analizá la carrera.';return}const body={...actual,pista_dia:pistaDia.value,clima:clima.value,viento:viento.value,direccion_viento:direccionViento.value,temperatura:temperatura.value,retiros:actual.participantes.filter(x=>x.retirado).map(x=>x.numero),observaciones:observaciones.value,analisis:ultimoAnalisis};const r=await fetch('/api/guardar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();ranking.innerHTML+=`<div class="status">${d.mensaje||d.error}</div>`}
+async function analizar(){const body=datosCarrera();const r=await fetch('/api/analizar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!d.ok){ranking.textContent=d.error;go('analisis');return}ultimoAnalisis=d;ranking.innerHTML=d.ranking.map((x,i)=>`<div class="rank"><b>${i+1}.º · N.º ${x.numero||'?'} — ${x.nombre}</b><br>Score: ${x.score}/100 · Probabilidad relativa: ${x.probabilidad_relativa}%<div class="small">${x.motivos.join(' · ')||'Sin motivos suficientes detectados'}</div></div>`).join('');go('analisis')}
+async function guardar(){if(!actual||!ultimoAnalisis){ranking.textContent='Primero analizá la carrera.';return}const body={...datosCarrera(),analisis:ultimoAnalisis};const r=await fetch('/api/guardar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();ranking.innerHTML+=`<div class="status">${d.mensaje||d.error}</div>`}
 async function cargarHistorial(){const r=await fetch('/api/historial');const d=await r.json();historialLista.innerHTML=d.carreras.map(x=>`<div class="horse"><b>${x.fecha} · ${x.hipodromo} · Carrera ${x.numero}</b><br>${x.premio||''}</div>`).join('')}
 async function cargarCarrerasVideos(i){
  const caballo=actual.participantes[i];
@@ -171,5 +268,5 @@ async function cargarCarrerasVideos(i){
   cont.innerHTML=`<div class="status">${esc(e.message)}</div>`;
  }
 }
-if('serviceWorker'in navigator)navigator.serviceWorker.register('/static/sw.js');
+cargarHerrajes();if('serviceWorker'in navigator)navigator.serviceWorker.register('/static/sw.js');
 </script></body></html>
