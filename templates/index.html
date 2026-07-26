@@ -35,7 +35,7 @@ button{width:100%;padding:13px;margin-top:11px;border:0;border-radius:11px;backg
 <div class="tabs"><button onclick="go('buscar')">Buscar</button><button onclick="go('datos')">Datos</button><button onclick="go('analisis')">Análisis</button><button onclick="go('historial')">Historial</button></div>
 
 <section id="buscar" class="panel"><h2>Buscar carrera</h2>
-<label>Fecha</label><input id="fecha" type="date" onchange="buscarFecha()"><div id="estado" class="status">Elegí una fecha.</div>
+<label>Fecha</label><input id="fecha" type="date" onchange="buscarFecha()" onkeydown="return false" onpaste="return false" ondrop="return false" inputmode="none" aria-label="Elegir fecha desde el calendario"><div id="estado" class="status">Elegí una fecha.</div>
 <div id="seleccion" class="hidden"><label>Hipódromo</label><select id="hipodromo" onchange="cargarCarreras()"></select>
 <label>Carrera</label><select id="carrera"></select><button onclick="cargarCarrera()">Cargar carrera</button></div></section>
 
