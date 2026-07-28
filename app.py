@@ -247,7 +247,35 @@ def init_db():
       codigo TEXT PRIMARY KEY,
       creado_en TEXT NOT NULL
     );
-    """)
+   CREATE TABLE IF NOT EXISTS historico_carreras(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fecha TEXT NOT NULL,
+    hipodromo TEXT NOT NULL,
+    numero INTEGER NOT NULL,
+    distancia INTEGER,
+    superficie TEXT,
+    pista TEXT,
+    categoria TEXT,
+    resultado_oficial TEXT NOT NULL,
+    fuente TEXT NOT NULL,
+    UNIQUE(fecha, hipodromo, numero)
+);
+
+CREATE TABLE IF NOT EXISTS historico_participantes(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    carrera_id INTEGER NOT NULL,
+    numero INTEGER,
+    caballo TEXT NOT NULL,
+    jockey TEXT,
+    entrenador TEXT,
+    peso REAL,
+    edad INTEGER,
+    sexo TEXT,
+    pedigree TEXT,
+    variables_previas TEXT,
+    puesto_oficial INTEGER,
+    FOREIGN KEY(carrera_id) REFERENCES historico_carreras(id)
+); """)
 
     columns = {
         row[1]
