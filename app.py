@@ -1238,6 +1238,7 @@ def datos_guardados():
 
 @app.post("/api/guardar-datos")
 def guardar_datos():
+        return jsonify(ok=True, mensaje="Los datos manuales son temporales.")
     data = request.get_json(silent=True) or {}
     if not all(data.get(k) for k in ["fecha", "hipodromo", "numero", "participantes"]):
         return jsonify(ok=False, error="Faltan datos de la carrera."), 400
