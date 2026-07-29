@@ -548,7 +548,31 @@ def parse_race(soup, numero):
             "retirado": False
         })
 
+    # Agrega el puesto oficial a participantes ya encontrados.
+    for row in [
+        node for node in nodes
+        if getattr(node, "name", None) == "tr"
+    ]:
+        row_text = clean(row.get_text(" ", strip=True))
 
+        for participante in participants:
+            nombre = participante.get("nombre", "")
+            numero = participante.get("numero")
+
+            resultado = re.match(
+                r"(\d{1,2})\s+" + str(numero)
+                + r"\s+(?:Image\s+)?"
+                + re.escape(nombre) + r"\b",
+                row_text,
+                re.I
+            )
+
+            if resultado:
+                participante["posicion_resultado"] = int(
+                    resultado.group(1)
+                )
+                break
+    
     # Respaldo para carreras ya finalizadas:
     # Stud Book muestra los participantes dentro de la tabla RESULTADOS.
     if not participants:
@@ -692,6 +716,8 @@ def parse_race(soup, numero):
         "fecha": race_date,
         "participantes": participants
     }
+
+
 
 
 def youtube_video_id(value):
