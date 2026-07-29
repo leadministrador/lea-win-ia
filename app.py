@@ -1249,7 +1249,7 @@ def carrera():
         data = parse_race(pagina_reunion, int(numero))
         if not data:
             return jsonify(ok=False,error="No se encontró la carrera."),404
-                    guardar_historico_oficial(data, meeting_name(pagina_reunion), url)
+        guardar_historico_oficial(data, meeting_name(pagina_reunion), url)
 
         media = current_race_media(data)
         data["videos"] = media.get("videos", [])
