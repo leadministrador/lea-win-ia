@@ -245,6 +245,7 @@ function render(){
 async function enriquecer(){estado.textContent='Cargando campañas...';const r=await fetch('/api/enriquecer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({participantes:actual.participantes})});const d=await r.json();actual.participantes=d.participantes;render();estado.textContent='Campañas anteriores incorporadas.'}
 async function analizar(){
  if(!actual)return;
+ await enriquecer();
  if(actual.participantes.some(p=>Number.isInteger(p.posicion_resultado))){
   ranking.textContent='La carrera ya finalizó. No se puede generar un pronóstico posterior.';
   go('analisis');return;
