@@ -719,6 +719,86 @@ def parse_race(soup, numero):
 
 
 
+def guardar_historico_oficial(data, hipodromo, fuente):
+    participantes = [
+        p for p in data.get("participantes", [])
+        if isinstance(p.get("posicion_resultado"), int)
+    ]
+    if not participantes or not any(
+        p["posicion_resultado"] == 1 for p in participantes
+    ):
+        return False
+
+    resultado = [
+        {
+            "puesto": p["posicion_resultado"],
+            "numero": p.get("numero"),
+            "caballo": p.get("nombre", "")
+        }
+        for p in participantes
+    ]
+
+    con = db()
+    try:
+        con.execute("""
+            INSERT INTO historico_carreras(
+                fecha,hipodromo,numero,distancia,superficie,pista,
+                categoria,resultado_oficial,fuente
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(fecha,hipodromo,numero) DO UPDATE SET
+                distancia=excluded.distancia,
+                superficie=excluded.superficie,
+                pista=excluded.pista,
+                categoria=excluded.categoria,
+                resultado_oficial=excluded.resultado_oficial,
+                fuente=excluded.fuente
+        """, (
+            data.get("fecha", ""), hipodromo, data.get("carrera"),
+            data.get("distancia"), data.get("superficie", ""),
+            data.get("estado", ""), data.get("categoria", ""),
+            json.dumps(resultado, ensure_ascii=False), fuente
+        ))
+
+        carrera_id = con.execute("""
+            SELECT id FROM historico_carreras
+            WHERE fecha=? AND hipodromo=? AND numero=?
+        """, (
+            data.get("fecha", ""), hipodromo, data.get("carrera")
+        )).fetchone()["id"]
+
+        con.execute(
+            "DELETE FROM historico_participantes WHERE carrera_id=?",
+            (carrera_id,)
+        )
+
+        for p in participantes:
+            variables = {
+                "caballeriza": p.get("caballeriza", ""),
+                "peso_caballo": p.get("peso_caballo", ""),
+                "campana": p.get("campana_resumen", "")
+            }
+            con.execute("""
+                INSERT INTO historico_participantes(
+                    carrera_id,numero,caballo,jockey,entrenador,peso,
+                    edad,sexo,pedigree,variables_previas,puesto_oficial
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                carrera_id, p.get("numero"), p.get("nombre", ""),
+                p.get("jockey", ""), p.get("entrenador", ""),
+                p.get("peso_jockey") or p.get("peso"),
+                p.get("edad"), p.get("sexo", ""),
+                " x ".join(filter(None, [
+                    p.get("padre", ""), p.get("madre", "")
+                ])),
+                json.dumps(variables, ensure_ascii=False),
+                p["posicion_resultado"]
+            ))
+
+        con.commit()
+        return True
+    finally:
+        con.close()
+
 
 def youtube_video_id(value):
     """Obtiene el identificador de un enlace real de YouTube."""
@@ -1156,10 +1236,20 @@ def carrera():
     numero = request.args.get("numero","")
     if not url.startswith(BASE) or not numero.isdigit():
         return jsonify(ok=False,error="Datos inválidos."),400
-    try:
-        data = parse_race(fetch(url), int(numero))
+
+
+
+
+
+
+
+        
+    
+    try:        pagina_reunion = fetch(url)
+        data = parse_race(pagina_reunion, int(numero))
         if not data:
             return jsonify(ok=False,error="No se encontró la carrera."),404
+                    guardar_historico_oficial(data, meeting_name(pagina_reunion), url)
 
         media = current_race_media(data)
         data["videos"] = media.get("videos", [])
