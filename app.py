@@ -720,6 +720,9 @@ def parse_race(soup, numero):
 
 
 def guardar_historico_oficial(data, hipodromo, fuente):
+        fecha = datetime.strptime(
+        data.get("fecha", ""), "%d/%m/%Y"
+    ).strftime("%Y-%m-%d")
     participantes = [
         p for p in data.get("participantes", [])
         if isinstance(p.get("posicion_resultado"), int)
