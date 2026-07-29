@@ -1245,7 +1245,8 @@ def carrera():
 
         
     
-    try:        pagina_reunion = fetch(url)
+        try:
+        pagina_reunion = fetch(url)
         data = parse_race(pagina_reunion, int(numero))
         if not data:
             return jsonify(ok=False,error="No se encontró la carrera."),404
