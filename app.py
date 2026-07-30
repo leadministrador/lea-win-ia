@@ -1200,7 +1200,28 @@ def score_horse(h, context):
     ):
         score += 7; reasons.append("antecedente compatible con la pista del día")
     return round(max(1, min(99, score)), 1), reasons
-
+def generar_analisis_oficial(data):
+    participantes = [
+        enrich_horse(dict(p))
+        for p in data.get("participantes", [])
+        if not p.get("retirado")
+    ]
+    ranking = []
+    for participante in participantes:
+        puntaje, motivos = score_horse(participante, data)
+        ranking.append({
+            **participante,
+            "score": puntaje,
+            "motivos": motivos
+        })
+    ranking.sort(key=lambda x: x["score"], reverse=True)
+    mejores = ranking[:4]
+    total = sum(x["score"] for x in mejores) or 1
+    for participante in mejores:
+        participante["probabilidad_relativa"] = round(
+            participante["score"] / total * 100, 1
+        )
+    return mejores
 @app.get("/")
 def home():
     return render_template("index.html")
