@@ -1280,7 +1280,14 @@ def carrera():
         if not data:
             return jsonify(ok=False,error="No se encontró la carrera."),404
         guardar_historico_oficial(data, meeting_name(pagina_reunion), url)
-        analisis_oficial = generar_analisis_oficial(data)
+        carrera_finalizada = any(
+            isinstance(p.get("posicion_resultado"), int)
+            for p in data.get("participantes", [])
+        )
+        analisis_oficial = (
+            [] if carrera_finalizada
+            else generar_analisis_oficial(data)
+        )
         fecha_oficial = datetime.strptime(
             data["fecha"], "%d/%m/%Y"
         ).strftime("%Y-%m-%d")
@@ -1294,7 +1301,10 @@ def carrera():
             ) VALUES(?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(fecha,hipodromo,numero) DO UPDATE SET
                 participantes=excluded.participantes,
-                analisis=excluded.analisis,
+                                analisis=CASE
+                    WHEN excluded.analisis != '[]' THEN excluded.analisis
+                    ELSE carreras.analisis
+                END,
                 creado_en=excluded.creado_en
         """, (
             fecha_oficial, hipodromo_oficial, int(data["carrera"]),
