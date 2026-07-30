@@ -1280,7 +1280,32 @@ def carrera():
         if not data:
             return jsonify(ok=False,error="No se encontró la carrera."),404
         guardar_historico_oficial(data, meeting_name(pagina_reunion), url)
+        analisis_oficial = generar_analisis_oficial(data)
+                fecha_oficial = datetime.strptime(
+            data["fecha"], "%d/%m/%Y"
+        ).strftime("%Y-%m-%d")
+        hipodromo_oficial = meeting_name(pagina_reunion)
 
+        con = db()
+        con.execute("""
+            INSERT INTO carreras(
+                fecha,hipodromo,numero,premio,distancia,superficie,
+                condicion,participantes,analisis,creado_en
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(fecha,hipodromo,numero) DO UPDATE SET
+                participantes=excluded.participantes,
+                analisis=excluded.analisis,
+                creado_en=excluded.creado_en
+        """, (
+            fecha_oficial, hipodromo_oficial, int(data["carrera"]),
+            data.get("premio", ""), data.get("distancia"),
+            data.get("superficie", ""), data.get("condicion", ""),
+            json.dumps(data["participantes"], ensure_ascii=False),
+            json.dumps(analisis_oficial, ensure_ascii=False),
+            datetime.now().isoformat(timespec="seconds")
+        ))
+        con.commit()
+        con.close()
         media = current_race_media(data)
         data["videos"] = media.get("videos", [])
         data["url_carrera"] = media.get("url_carrera", "")
