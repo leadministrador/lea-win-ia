@@ -761,7 +761,14 @@ def guardar_historico_oficial(data, hipodromo, fuente):
             data.get("estado", ""), data.get("categoria", ""),
             json.dumps(resultado, ensure_ascii=False), fuente
         ))
-
+        con.execute("""
+            UPDATE carreras
+            SET resultado_real=?
+            WHERE fecha=? AND hipodromo=? AND numero=?
+        """, (
+            json.dumps(resultado, ensure_ascii=False),
+            fecha, hipodromo, data.get("carrera")
+        ))
         carrera_id = con.execute("""
             SELECT id FROM historico_carreras
             WHERE fecha=? AND hipodromo=? AND numero=?
