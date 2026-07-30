@@ -2,7 +2,7 @@
 from flask import Flask, render_template, request, jsonify
 import requests, re, sqlite3, json, os
 from urllib.parse import urljoin, quote_plus
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 BASE = "https://www.studbook.org.ar"
