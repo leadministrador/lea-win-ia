@@ -1,5 +1,6 @@
 
 from flask import Flask, render_template, request, jsonify
+from bs4 import BeautifulSoup
 import requests, re, sqlite3, json, os
 from urllib.parse import urljoin, quote_plus
 from datetime import datetime, timedelta
