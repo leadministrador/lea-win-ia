@@ -1281,7 +1281,7 @@ def carrera():
             return jsonify(ok=False,error="No se encontró la carrera."),404
         guardar_historico_oficial(data, meeting_name(pagina_reunion), url)
         analisis_oficial = generar_analisis_oficial(data)
-                fecha_oficial = datetime.strptime(
+        fecha_oficial = datetime.strptime(
             data["fecha"], "%d/%m/%Y"
         ).strftime("%Y-%m-%d")
         hipodromo_oficial = meeting_name(pagina_reunion)
