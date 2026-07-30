@@ -1239,9 +1239,9 @@ def actualizar_carreras_futuras():
                         )
                         clave = "carreras" if respuesta.status_code == 200 else "errores"
                         resumen[clave] += 1
-                     except Exception:
+                 except Exception:
                     resumen["errores"] += 1
-        return resumen
+    return  resumen
 
 @app.get("/")
 def home():     
