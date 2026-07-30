@@ -1221,8 +1221,30 @@ def generar_analisis_oficial(data):
             participante["score"] / total * 100, 1
         )
     return mejores
+def actualizar_carreras_futuras():
+    resumen = {"fechas": 0, "reuniones": 0, "carreras": 0, "errores": 0}
+    with app.test_client() as cliente:
+        for dias in range(8):
+            fecha = (datetime.now() + timedelta(days=dias)).strftime("%Y-%m-%d")
+            resumen["fechas"] += 1
+            for url in locate_meetings(fecha):
+                resumen["reuniones"] += 1
+                try:
+                    pagina = fetch(url)
+                    carreras = extract_races_from_meeting(pagina)
+                    for carrera in carreras:
+                        respuesta = cliente.get(
+                            "/api/carrera",
+                            query_string={"url": url, "numero": carrera["numero"]}
+                        )
+                        clave = "carreras" if respuesta.status_code == 200 else "errores"
+                        resumen[clave] += 1
+                      except Exception:
+                    resumen["errores"] += 1
+        return resumen
+
 @app.get("/")
-def home():
+def home():     
     return render_template("index.html")
 
 @app.get("/api/reuniones")
