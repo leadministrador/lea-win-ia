@@ -720,8 +720,8 @@ def parse_race(soup, numero):
 
 
 def guardar_historico_oficial(data, hipodromo, fuente):
-        fecha = datetime.strptime(
-        data.get("fecha", ""), "%d/%m/%Y"
+    fecha = datetime.strptime(
+    data.get("fecha", ""), "%d/%m/%Y"
     ).strftime("%Y-%m-%d")
     participantes = [
         p for p in data.get("participantes", [])
@@ -756,7 +756,7 @@ def guardar_historico_oficial(data, hipodromo, fuente):
                 resultado_oficial=excluded.resultado_oficial,
                 fuente=excluded.fuente
         """, (
-            data.get("fecha", ""), hipodromo, data.get("carrera"),
+            fecha, hipodromo, data.get("carrera"),
             data.get("distancia"), data.get("superficie", ""),
             data.get("estado", ""), data.get("categoria", ""),
             json.dumps(resultado, ensure_ascii=False), fuente
@@ -766,7 +766,7 @@ def guardar_historico_oficial(data, hipodromo, fuente):
             SELECT id FROM historico_carreras
             WHERE fecha=? AND hipodromo=? AND numero=?
         """, (
-            data.get("fecha", ""), hipodromo, data.get("carrera")
+            fecha, hipodromo, data.get("carrera")
         )).fetchone()["id"]
 
         con.execute(
