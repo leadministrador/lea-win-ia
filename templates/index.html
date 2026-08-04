@@ -1,202 +1,1615 @@
-<!doctype html><html lang="es"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#07110c"><link rel="manifest" href="/static/manifest.json">
-<title>LEA WIN IA</title><style>
-:root{--b:#07110c;--c:#102218;--d:#08140e;--g:#1ed760;--t:#f4fff8;--m:#a8b8ae;--l:#294636;--r:#ff6b6b}
-*{box-sizing:border-box}body{margin:0;background:linear-gradient(#06100b,#0c1a12);color:var(--t);font-family:Arial,sans-serif}
-header{position:sticky;top:0;z-index:4;background:#07110cf4;border-bottom:1px solid var(--l);padding:14px 16px}
-.logo{font-size:22px;font-weight:900}.logo span{color:var(--g)}main{max-width:900px;margin:auto;padding:14px}
-.panel{background:var(--c);border:1px solid var(--l);border-radius:16px;padding:14px;margin-bottom:12px}
-h2{font-size:17px;margin:0 0 10px}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}
-label{display:block;font-size:12px;color:var(--m);margin:7px 0 5px}input,select{width:100%;padding:12px;border:1px solid var(--l);border-radius:10px;background:var(--d);color:var(--t)}
-button{width:100%;padding:13px;margin-top:11px;border:0;border-radius:11px;background:var(--g);font-weight:900;color:#06100b}
-.secondary{background:#183526;color:var(--t);border:1px solid var(--l)}
-.status,.horse,.rank{margin-top:8px;padding:11px;border:1px solid var(--l);border-radius:11px;background:var(--d);font-size:13px}
-.horse.retired{opacity:.55;border-color:var(--r)}.num{display:inline-grid;place-items:center;width:34px;height:34px;border-radius:9px;background:var(--g);color:#06100b;font-weight:900;margin-right:8px}
-.small{font-size:12px;color:var(--m);margin-top:4px}.hidden{display:none}.rank b{color:var(--g)}
-.tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px}.tabs button{margin:0;padding:10px 5px;font-size:11px}
-@media(max-width:600px){.grid{grid-template-columns:1fr}.tabs{grid-template-columns:repeat(2,1fr)}}
-</style></head><body>
-<header><div class="logo">LEA <span>WIN IA</span></div></header><main>
-<div class="tabs"><button onclick="go('buscar')">Buscar</button><button onclick="go('datos')">Datos</button><button onclick="go('analisis')">Análisis</button><button onclick="go('historial')">Historial</button></div>
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LEA WIN IA — Prototipo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Archivo:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --verde-turf:#153832;
+    --verde-turf-2:#1f4a42;
+    --pergamino:#f2ebda;
+    --pergamino-2:#e7dcc2;
+    --bronce:#b6904f;
+    --bronce-claro:#d9b877;
+    --carmin:#8c2a2a;
+    --tinta:#241b14;
+    --hueso:#faf6ee;
+    --sombra: 0 10px 30px rgba(21,56,50,0.18);
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--hueso);
+    color:var(--tinta);
+    font-family:'Archivo',sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3,.display{
+    font-family:'Fraunces',serif;
+    font-weight:600;
+    letter-spacing:-0.01em;
+  }
+  .mono{ font-family:'Space Mono',monospace; }
 
-<section id="buscar" class="panel"><h2>Buscar carrera</h2>
-<label>Hipódromo</label>
-<select id="hipodromo" onchange="cargarFechas()">
-<option value="">Cargando hipódromos...</option>
-</select>
-<label>Fecha de reunión</label>
-<select id="fecha" onchange="buscarFecha()" disabled>
-<option value="">Primero elegí el hipódromo</option>
-</select>
-<div id="estado" class="status">Consultando calendario oficial...</div>
-<div id="seleccion" class="hidden">
-<label>Carrera</label>
-<select id="carrera"></select>
-<button onclick="cargarCarrera()">Cargar carrera</button>
-</div></section>
+  /* ---------- HERO ---------- */
+  .hero{
+    position:relative;
+    background:radial-gradient(120% 140% at 15% 0%, var(--verde-turf-2) 0%, var(--verde-turf) 55%, #0f2621 100%);
+    color:var(--hueso);
+    padding:64px 24px 120px;
+    overflow:hidden;
+  }
+  .hero-inner{
+    max-width:880px;
+    margin:0 auto;
+    position:relative;
+    z-index:2;
+  }
+  .brand{
+    font-family:'Fraunces',serif;
+    font-size:15px;
+    font-weight:700;
+    letter-spacing:0.06em;
+    color:var(--hueso);
+    margin-bottom:26px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .brand span{
+    font-family:'Space Mono',monospace;
+    font-size:11px;
+    font-weight:700;
+    color:var(--tinta);
+    background:var(--bronce-claro);
+    padding:2px 6px;
+    border-radius:3px;
+    letter-spacing:0.04em;
+  }
+  .eyebrow{
+    font-family:'Space Mono',monospace;
+    font-size:12px;
+    letter-spacing:0.18em;
+    text-transform:uppercase;
+    color:var(--bronce-claro);
+    margin-bottom:18px;
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+  .eyebrow::before{
+    content:"";
+    width:22px; height:1px;
+    background:var(--bronce-claro);
+    display:inline-block;
+  }
+  .hero h1{
+    font-size:clamp(40px,8vw,72px);
+    line-height:0.98;
+    margin:0 0 14px;
+  }
+  .hero h1 em{
+    font-style:italic;
+    color:var(--bronce-claro);
+  }
+  .hero p{
+    max-width:460px;
+    font-size:16px;
+    line-height:1.6;
+    color:#d9e3df;
+    margin:0 0 34px;
+  }
+  .btn{
+    font-family:'Archivo',sans-serif;
+    font-weight:600;
+    font-size:15px;
+    border:none;
+    cursor:pointer;
+    padding:15px 26px;
+    border-radius:3px;
+    transition:transform .15s ease, box-shadow .15s ease;
+  }
+  .btn:focus-visible{ outline:2px solid var(--bronce-claro); outline-offset:3px; }
+  .btn-primary{
+    background:var(--bronce);
+    color:var(--tinta);
+    box-shadow:var(--sombra);
+  }
+  .btn-primary:hover{ transform:translateY(-1px); background:var(--bronce-claro); }
+  .btn-ghost{
+    background:transparent;
+    color:var(--hueso);
+    border:1px solid rgba(250,246,238,0.35);
+  }
+  .btn-ghost:hover{ border-color:var(--bronce-claro); color:var(--bronce-claro); }
+  .hero-actions{ display:flex; gap:14px; flex-wrap:wrap; }
 
-<section id="datos" class="panel hidden"><h2>Datos del día</h2><div class="grid">
-<div><label>Pista actual</label><select id="pistaDia"><option>Sin confirmar</option><option>Normal</option><option>Húmeda</option><option>Pesada</option><option>Barrosa</option></select></div>
-<div><label>Clima</label><select id="clima"><option>Sin confirmar</option><option>Despejado</option><option>Nublado</option><option>Lluvia</option><option>Viento</option></select></div>
-<div><label>Viento</label><input id="viento" placeholder="Ej.: 25 km/h de frente"></div>
-<div><label>Retiros</label><input id="retiros" placeholder="Ej.: 3, 8" oninput="aplicarRetiros()"></div>
-<div><label>Observaciones</label><input id="observaciones" placeholder="Jockey, herraje, cambios..."></div></div>
-<div id="meta" class="status">Primero cargá una carrera.</div><div id="lista"></div>
-<button onclick="enriquecer()">Traer campañas anteriores</button><button onclick="analizar()">Analizar carrera</button></section>
-
-<section id="analisis" class="panel hidden"><h2>Pronóstico LEA</h2><div id="ranking" class="status">Todavía no se analizó.</div>
-</section>
-
-<section id="historial" class="panel hidden"><h2>Historial</h2><button onclick="cargarHistorial()">Actualizar</button><div id="historialLista"></div></section>
-</main><script>
-let reuniones=[],calendario=[],actual=null,ultimoAnalisis=null;
-function go(id){['buscar','datos','analisis','historial'].forEach(x=>document.getElementById(x).classList.toggle('hidden',x!==id));if(id==='historial')cargarHistorial()}
-
-function textoFecha(valor){
- const partes=valor.split('-');
- return partes.length===3
-  ?`${partes[2]}/${partes[1]}/${partes[0]}`
-  :valor;
-}
-
-async function fetchConTiempo(url,opciones={},milisegundos=12000){
- const controller=new AbortController();
- const timer=setTimeout(()=>controller.abort(),milisegundos);
- try{
-  return await fetch(url,{...opciones,signal:controller.signal});
- }finally{
-  clearTimeout(timer);
- }
-}
-
-async function cargarCalendario(){
- estado.textContent='Consultando calendario oficial...';
- seleccion.classList.add('hidden');
- fecha.disabled=true;
-
- try{
-  const respuesta=await fetchConTiempo('/api/calendario');
-  const datos=await respuesta.json();
-
-  if(!datos.ok||!datos.reuniones?.length){
-   hipodromo.innerHTML='<option value="">Sin hipódromos disponibles</option>';
-   fecha.innerHTML='<option value="">Sin fechas disponibles</option>';
-   estado.textContent=datos.error||'Calendario no disponible.';
-   return;
+  .horse-svg{
+    position:absolute;
+    right:-40px; bottom:-30px;
+    width:min(46vw,460px);
+    opacity:0.95;
+    z-index:1;
+  }
+  @media (max-width:720px){
+    .horse-svg{ opacity:0.25; right:-60px; bottom:-10px; width:80vw; }
   }
 
-  calendario=datos.reuniones;
-  const nombres=[...new Set(
-   calendario.map(item=>item.hipodromo)
-  )].sort();
+  /* ---------- CASCADA ---------- */
+  .panel-wrap{
+    max-width:880px;
+    margin:-70px auto 60px;
+    padding:0 24px;
+    position:relative;
+    z-index:3;
+  }
+  .card{
+    background:var(--pergamino);
+    border:1px solid var(--pergamino-2);
+    border-radius:6px;
+    box-shadow:var(--sombra);
+    overflow:hidden;
+  }
+  .card + .card{ margin-top:16px; }
+  .step{
+    padding:22px 26px;
+  }
+  .step-head{
+    display:flex;
+    align-items:baseline;
+    justify-content:space-between;
+    gap:12px;
+    cursor:pointer;
+  }
+  .step-label{
+    font-family:'Space Mono',monospace;
+    font-size:11px;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--verde-turf);
+    opacity:0.65;
+  }
+  .step-title{
+    font-family:'Fraunces',serif;
+    font-size:22px;
+    font-weight:600;
+    margin:4px 0 0;
+  }
+  .step-value{
+    font-family:'Space Mono',monospace;
+    font-size:13px;
+    color:var(--carmin);
+  }
+  .chev{
+    font-size:18px;
+    color:var(--verde-turf);
+    transition:transform .2s ease;
+  }
+  .step.open .chev{ transform:rotate(180deg); }
+  .step-body{
+    max-height:0;
+    overflow:hidden;
+    transition:max-height .28s ease;
+  }
+  .step.open .step-body{ max-height:2000px; margin-top:18px; }
 
-  hipodromo.innerHTML=
-   '<option value="">Elegí un hipódromo</option>'+
-   nombres.map(nombre=>
-    `<option value="${esc(nombre)}">${esc(nombre)}</option>`
-   ).join('');
+  /* fecha */
+  .fecha-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(84px,1fr));
+    gap:8px;
+  }
+  .fecha-chip{
+    border:1px solid var(--pergamino-2);
+    background:var(--hueso);
+    border-radius:4px;
+    padding:10px 6px;
+    text-align:center;
+    cursor:pointer;
+    font-family:'Space Mono',monospace;
+  }
+  .fecha-chip .dia{ font-size:18px; font-weight:700; display:block; }
+  .fecha-chip .mes{ font-size:10px; text-transform:uppercase; letter-spacing:.08em; opacity:.6; }
+  .fecha-chip:hover{ border-color:var(--bronce); }
+  .fecha-chip.sel{ background:var(--verde-turf); color:var(--hueso); border-color:var(--verde-turf); }
 
-  fecha.innerHTML=
-   '<option value="">Primero elegí el hipódromo</option>';
-  estado.textContent=datos.aviso||'Elegí el hipódromo.';
+  /* hipodromo */
+  .hip-list{ display:flex; flex-direction:column; gap:10px; }
+  .hip-item{
+    display:flex; align-items:center; justify-content:space-between;
+    border:1px solid var(--pergamino-2);
+    background:var(--hueso);
+    padding:14px 16px;
+    border-radius:4px;
+    cursor:pointer;
+  }
+  .hip-item:hover{ border-color:var(--bronce); }
+  .hip-item.sel{ border-color:var(--verde-turf); background:#fff; }
+  .hip-nombre{ font-family:'Fraunces',serif; font-size:17px; font-weight:600; }
+  .hip-meta{ font-family:'Space Mono',monospace; font-size:11px; opacity:.6; }
 
- }catch(error){
-  hipodromo.innerHTML=
-   '<option value="">Sin hipódromos disponibles</option>';
-  fecha.innerHTML=
-   '<option value="">Sin fechas disponibles</option>';
-  estado.textContent=error.name==='AbortError'
-   ?'La consulta tardó demasiado. Calendario no disponible.'
-   :'No se pudo consultar el calendario.';
- }
+  /* carreras */
+  .carrera-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+  .carrera-item{
+    border:1px solid var(--pergamino-2);
+    background:var(--hueso);
+    border-radius:4px;
+    padding:12px 14px;
+    cursor:pointer;
+  }
+  .carrera-item:hover{ border-color:var(--bronce); }
+  .carrera-item.sel{ border-color:var(--verde-turf); background:#fff; }
+  .carrera-item .num{ font-family:'Space Mono',monospace; font-size:11px; color:var(--carmin); }
+  .carrera-item .tit{ font-family:'Fraunces',serif; font-weight:600; font-size:15px; margin-top:2px; }
+  .carrera-item .dist{ font-family:'Space Mono',monospace; font-size:11px; opacity:.6; margin-top:4px; }
+
+  /* competidores */
+  .comp-list{ display:flex; flex-direction:column; gap:8px; }
+  .comp-item{
+    display:flex; align-items:center; gap:14px;
+    border:1px solid var(--pergamino-2);
+    background:var(--hueso);
+    padding:12px 14px;
+    border-radius:4px;
+    cursor:pointer;
+  }
+  .comp-item:hover{ border-color:var(--bronce); }
+  .silk{
+    width:34px; height:34px;
+    border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    font-family:'Space Mono',monospace;
+    font-weight:700; font-size:14px;
+    color:#fff;
+    flex-shrink:0;
+    border:2px solid rgba(255,255,255,0.6);
+    box-shadow:0 0 0 1px rgba(0,0,0,0.15);
+  }
+  .comp-nombre{ font-family:'Fraunces',serif; font-weight:600; font-size:16px; }
+  .comp-jinete{ font-family:'Space Mono',monospace; font-size:11px; opacity:.6; }
+  .comp-peso{ margin-left:auto; font-family:'Space Mono',monospace; font-size:12px; opacity:.7; }
+
+  /* ficha caballo (modal) */
+  .overlay{
+    position:fixed; inset:0;
+    background:rgba(21,56,50,0.55);
+    display:none;
+    align-items:flex-end;
+    justify-content:center;
+    z-index:50;
+    backdrop-filter:blur(2px);
+  }
+  .overlay.show{ display:flex; }
+  @media (min-width:720px){
+    .overlay{ align-items:center; }
+  }
+  .ficha{
+    background:var(--hueso);
+    width:100%;
+    max-width:520px;
+    max-height:88vh;
+    overflow-y:auto;
+    border-radius:10px 10px 0 0;
+    padding:28px 26px 34px;
+    position:relative;
+    animation:subir .25s ease;
+  }
+  @media (min-width:720px){ .ficha{ border-radius:10px; } }
+  @keyframes subir{ from{ transform:translateY(24px); opacity:0;} to{transform:translateY(0); opacity:1;} }
+  .ficha-close{
+    position:absolute; top:16px; right:16px;
+    background:none; border:none; font-size:20px; cursor:pointer; color:var(--tinta); opacity:.5;
+  }
+  .ficha-close:hover{ opacity:1; }
+  .ficha-head{ display:flex; align-items:center; gap:16px; margin-bottom:20px; }
+  .ficha-nombre{ font-size:26px; margin:0; }
+  .ficha-sub{ font-family:'Space Mono',monospace; font-size:12px; opacity:.6; margin-top:4px; }
+  .tag{
+    display:inline-block; font-family:'Space Mono',monospace; font-size:10px;
+    text-transform:uppercase; letter-spacing:.08em;
+    background:var(--verde-turf); color:var(--hueso);
+    padding:4px 8px; border-radius:3px; margin-right:6px;
+  }
+  .ficha-section{ margin-top:22px; }
+  .ficha-section h4{
+    font-family:'Space Mono',monospace; font-size:11px; text-transform:uppercase;
+    letter-spacing:.1em; opacity:.55; margin:0 0 10px;
+  }
+  .campana-row{
+    display:flex; align-items:center; gap:12px;
+    padding:10px 0; border-bottom:1px solid var(--pergamino-2);
+  }
+  .campana-row:last-child{ border-bottom:none; }
+  .campana-thumb{
+    width:56px; height:38px; border-radius:4px;
+    background:linear-gradient(135deg,var(--verde-turf),var(--verde-turf-2));
+    display:flex; align-items:center; justify-content:center;
+    color:var(--bronce-claro); font-size:14px; flex-shrink:0;
+  }
+  .campana-info{ font-size:13px; line-height:1.4; }
+  .campana-info b{ font-family:'Fraunces',serif; }
+
+  /* pronostico */
+  .pronostico{
+    margin-top:20px;
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .pron-row{
+    display:flex; align-items:center; gap:14px;
+    background:#fff;
+    border:1px solid var(--pergamino-2);
+    border-radius:4px;
+    padding:12px 14px;
+  }
+  .pron-pos{
+    font-family:'Fraunces',serif; font-weight:700; font-size:20px;
+    color:var(--verde-turf); width:26px;
+  }
+  .pron-bar-wrap{ flex:1; }
+  .pron-nombre{ font-family:'Fraunces',serif; font-weight:600; font-size:15px; }
+  .pron-bar-bg{ background:var(--pergamino); height:6px; border-radius:3px; margin-top:6px; overflow:hidden; }
+  .pron-bar{ height:100%; background:linear-gradient(90deg,var(--bronce),var(--carmin)); border-radius:3px; }
+  .pron-pct{ font-family:'Space Mono',monospace; font-size:13px; color:var(--carmin); width:48px; text-align:right; }
+
+  .contador-seg{
+    background:var(--carmin);
+    color:var(--hueso);
+    font-family:'Space Mono',monospace;
+    font-size:11px;
+    padding:1px 6px;
+    border-radius:10px;
+    margin-left:6px;
+  }
+  .seguir-btn{
+    display:flex; align-items:center; gap:8px;
+    background:var(--hueso);
+    border:1px solid var(--pergamino-2);
+    padding:9px 14px;
+    border-radius:5px;
+    cursor:pointer;
+    font-family:'Archivo',sans-serif;
+    font-weight:600;
+    font-size:13px;
+    color:var(--verde-turf);
+    margin-top:16px;
+    width:100%;
+    justify-content:center;
+    transition:all .15s ease;
+  }
+  .seguir-btn:hover{ border-color:var(--bronce); }
+  .seguir-btn.activo{
+    background:var(--verde-turf);
+    color:var(--hueso);
+    border-color:var(--verde-turf);
+  }
+  .toast{
+    position:fixed; left:50%; bottom:26px; transform:translateX(-50%) translateY(140%);
+    background:var(--verde-turf); color:var(--hueso);
+    padding:13px 20px; border-radius:6px;
+    font-size:14px; box-shadow:var(--sombra);
+    z-index:80; transition:transform .3s ease;
+    max-width:90vw; text-align:center;
+  }
+  .toast.show{ transform:translateX(-50%) translateY(0); }
+
+  .seg-overlay{
+    position:fixed; inset:0; background:rgba(21,56,50,0.55);
+    display:none; align-items:center; justify-content:center; z-index:60; padding:20px;
+  }
+  .seg-overlay.show{ display:flex; }
+  .seg-panel{
+    background:var(--hueso); border-radius:10px; padding:26px;
+    max-width:440px; width:100%; max-height:80vh; overflow-y:auto; position:relative;
+  }
+  .seg-empty{ font-size:14px; opacity:.6; padding:20px 0; text-align:center; }
+  .seg-item{
+    display:flex; align-items:center; gap:12px;
+    padding:12px 0; border-bottom:1px solid var(--pergamino-2);
+  }
+  .seg-item:last-child{ border-bottom:none; }
+  .seg-info{ flex:1; }
+  .seg-nombre{ font-family:'Fraunces',serif; font-weight:600; font-size:15px; }
+  .seg-aviso{ font-family:'Space Mono',monospace; font-size:11px; color:var(--carmin); margin-top:2px; }
+  .seg-quitar{
+    background:none; border:none; cursor:pointer; opacity:.5; font-size:16px;
+  }
+  .seg-quitar:hover{ opacity:1; }
+
+  /* --- Resumen del caballo --- */
+  .resumen-grid{
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(96px,1fr));
+    gap:10px; margin-bottom:14px;
+  }
+  .resumen-item{
+    background:var(--pergamino); border-radius:5px; padding:10px 12px;
+  }
+  .resumen-item .r-rot{
+    font-family:'Space Mono',monospace; font-size:9px; text-transform:uppercase;
+    letter-spacing:.09em; opacity:.55;
+  }
+  .resumen-item .r-val{
+    font-family:'Fraunces',serif; font-size:19px; font-weight:700;
+    color:var(--verde-turf); line-height:1.1; margin-top:3px;
+  }
+  .logro{
+    font-size:13px; line-height:1.5; background:var(--pergamino);
+    border-left:3px solid var(--bronce); padding:10px 12px;
+    border-radius:0 4px 4px 0; margin-bottom:12px;
+  }
+  .pedigree{ font-size:12px; opacity:.75; line-height:1.6; }
+
+  /* --- Carreras corridas --- */
+  .carrera-fila{
+    border:1px solid var(--pergamino-2); border-radius:5px;
+    margin-bottom:8px; overflow:hidden; background:var(--hueso);
+  }
+  .carrera-cab{
+    display:flex; align-items:center; gap:11px; padding:10px 12px;
+    cursor:pointer;
+  }
+  .carrera-cab:hover{ background:var(--pergamino); }
+  .puesto-bola{
+    width:30px; height:30px; border-radius:50%; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center;
+    font-family:'Fraunces',serif; font-weight:700; font-size:14px;
+    background:var(--pergamino-2); color:var(--tinta);
+  }
+  .puesto-bola.p1{ background:var(--bronce); color:#fff; }
+  .puesto-bola.p2{ background:#9aa8a4; color:#fff; }
+  .puesto-bola.p3{ background:#c08a5a; color:#fff; }
+  .carrera-datos{ flex:1; min-width:0; }
+  .carrera-l1{
+    font-family:'Fraunces',serif; font-weight:600; font-size:14px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .carrera-l2{
+    font-family:'Space Mono',monospace; font-size:10.5px; opacity:.68;
+    margin-top:2px;
+  }
+  .btn-video{
+    flex-shrink:0; width:32px; height:32px; border-radius:5px; border:none;
+    background:var(--carmin); color:#fff; cursor:pointer; font-size:12px;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .btn-video:hover{ background:#a33; }
+  .btn-video.sin{ background:var(--pergamino-2); color:#999; cursor:default; }
+  .video-caja{ display:none; padding:0 12px 12px; }
+  .video-caja.abierta{ display:block; }
+  .video-caja iframe{
+    width:100%; aspect-ratio:16/9; border:none; border-radius:5px;
+    background:#000;
+  }
+  .carrera-extra{
+    font-family:'Space Mono',monospace; font-size:10.5px; opacity:.7;
+    padding:0 12px 10px; line-height:1.6; display:none;
+  }
+  .carrera-extra.abierta{ display:block; }
+
+  /* barra de carga visible arriba */
+  /* ====== CARTEL DE CARGA GRANDE ====== */
+  .barra-top{
+    position:sticky; top:8px; z-index:20;
+    background:var(--verde-turf); color:var(--hueso);
+    border-radius:10px; padding:20px 20px 18px; margin-bottom:16px;
+    display:none;
+    box-shadow:0 8px 26px rgba(21,56,50,.3);
+  }
+  .barra-top.visible{ display:block; }
+  .carga-fila{ display:flex; align-items:center; gap:15px; }
+  .caballito{
+    width:44px; height:44px; flex-shrink:0;
+    animation:galope 1.1s ease-in-out infinite;
+  }
+  @keyframes galope{
+    0%,100%{ transform:translateY(0) rotate(-2deg); }
+    50%{ transform:translateY(-7px) rotate(2deg); }
+  }
+  .carga-texto{ flex:1; min-width:0; }
+  .carga-titulo{
+    font-family:'Fraunces',serif; font-size:19px; font-weight:600; line-height:1.25;
+  }
+  .carga-paso{
+    font-family:'Space Mono',monospace; font-size:12.5px;
+    color:var(--bronce-claro); margin-top:5px;
+  }
+  .pista-carga{
+    margin-top:15px; height:10px; background:rgba(255,255,255,.16);
+    border-radius:5px; overflow:hidden;
+  }
+  .pista-carga div{
+    height:100%; width:30%; border-radius:5px;
+    background:linear-gradient(90deg,var(--bronce),var(--bronce-claro));
+    animation:correr 1.7s ease-in-out infinite;
+  }
+  @keyframes correr{ 0%{width:12%} 50%{width:82%} 100%{width:12%} }
+  .puntos::after{ content:''; animation:puntitos 1.4s steps(4,end) infinite; }
+  @keyframes puntitos{
+    0%{content:''} 25%{content:'.'} 50%{content:'..'} 75%{content:'...'}
+  }
+  .cargando-linea{
+    display:flex; align-items:center; gap:8px;
+    font-family:'Space Mono',monospace; font-size:11px;
+    color:var(--verde-turf); padding:6px 0 2px;
+  }
+  .cargando-linea .spin{
+    width:11px; height:11px; border:2px solid var(--pergamino-2);
+    border-top-color:var(--bronce); border-radius:50%;
+    animation:girar .7s linear infinite; flex-shrink:0;
+  }
+  /* --- Buscador de caballo con autocompletado --- */
+  .buscador-caja{ padding:4px 0; }
+  .buscador-envoltura{ position:relative; }
+  .buscador-fila{ display:flex; gap:9px; }
+  .buscador-fila input{
+    flex:1; font-family:'Archivo',sans-serif; font-size:16px;
+    padding:13px 15px; border:1px solid var(--pergamino-2);
+    border-radius:5px; background:var(--hueso); color:var(--tinta);
+    min-width:0;
+  }
+  .buscador-fila input:focus{ outline:2px solid var(--bronce); outline-offset:-1px; }
+  .limpiar{
+    position:absolute; right:14px; top:13px; background:none; border:none;
+    font-size:17px; opacity:.35; cursor:pointer; display:none; padding:0;
+  }
+  .limpiar.visible{ display:block; }
+  .limpiar:hover{ opacity:.8; }
+  .sugerencias{
+    margin-top:9px; border:1px solid var(--pergamino-2); border-radius:5px;
+    background:var(--hueso); max-height:340px; overflow-y:auto; display:none;
+  }
+  .sugerencias.visible{ display:block; }
+  .sug-item{
+    padding:11px 14px; cursor:pointer;
+    border-bottom:1px solid var(--pergamino-2);
+  }
+  .sug-item:last-child{ border-bottom:none; }
+  .sug-item:hover, .sug-item.activo{ background:var(--pergamino); }
+  .sug-nombre{ font-family:'Fraunces',serif; font-weight:600; font-size:15.5px; }
+  .sug-nombre b{ color:var(--carmin); }
+  .sug-detalle{
+    font-family:'Space Mono',monospace; font-size:10.5px; opacity:.6;
+    margin-top:2px; line-height:1.4;
+  }
+  .sug-exacto{ background:#f7f0e0; border-left:3px solid var(--bronce); }
+  .sug-etiqueta{
+    display:inline-block; font-family:'Space Mono',monospace; font-size:9px;
+    text-transform:uppercase; letter-spacing:.08em; background:var(--bronce);
+    color:#fff; padding:2px 6px; border-radius:3px; margin-left:7px;
+    vertical-align:2px;
+  }
+  .sug-estado{
+    padding:13px 14px; font-family:'Space Mono',monospace; font-size:12px;
+    opacity:.65; display:flex; align-items:center; gap:9px;
+  }
+  .ayuda{
+    font-family:'Space Mono',monospace; font-size:11px; opacity:.5;
+    margin-top:9px; line-height:1.5;
+  }
+  .proxima-caja{
+    background:var(--verde-turf); color:var(--hueso);
+    border-radius:6px; padding:14px 16px; margin:14px 0;
+  }
+  .proxima-caja .p-rot{
+    font-family:'Space Mono',monospace; font-size:10px; text-transform:uppercase;
+    letter-spacing:.1em; color:var(--bronce-claro); margin-bottom:7px;
+  }
+  .proxima-item{
+    font-family:'Fraunces',serif; font-size:15px; font-weight:600;
+    padding:5px 0; border-bottom:1px solid rgba(255,255,255,.14);
+  }
+  .proxima-item:last-child{ border-bottom:none; }
+  .sin-proxima{
+    background:var(--pergamino); border-left:3px solid var(--pergamino-2);
+    padding:11px 13px; border-radius:0 4px 4px 0; font-size:13px;
+    opacity:.75; margin:14px 0;
+  }
+
+  .cond-txt{
+    margin-top:7px; padding:7px 9px; background:var(--pergamino);
+    border-radius:4px; font-family:'Archivo',sans-serif; font-size:11.5px;
+    line-height:1.5; opacity:.9;
+  }
+  .estado-msg{
+    font-family:'Space Mono',monospace;
+    font-size:13px;
+    padding:14px 4px;
+    color:var(--verde-turf);
+    opacity:.75;
+  }
+  .estado-msg.error{ color:var(--carmin); opacity:1; }
+  .spinner{
+    display:inline-block; width:12px; height:12px;
+    border:2px solid var(--pergamino-2); border-top-color:var(--bronce);
+    border-radius:50%; margin-right:8px; vertical-align:-1px;
+    animation:girar .7s linear infinite;
+  }
+  @keyframes girar{ to{ transform:rotate(360deg); } }
+
+  .aviso-demo{
+    max-width:880px; margin:0 auto 30px; padding:0 24px;
+  }
+  .aviso-demo p{
+    font-family:'Space Mono',monospace; font-size:12px; color:var(--tinta); opacity:.55;
+    text-align:center;
+  }
+  /* ==========================================================
+     CELULAR — todo mas grande y comodo de tocar
+     ========================================================== */
+  @media (max-width:720px){
+    body{ font-size:16px; }
+
+    /* Botones: altura minima comoda para el dedo */
+    .btn{
+      font-size:17px; padding:16px 22px; min-height:56px;
+      border-radius:8px; justify-content:center;
+    }
+    .hero-actions{ gap:11px; }
+    .hero-actions .btn{ width:100%; }
+
+    /* Titulos y textos del inicio */
+    .hero{ padding:52px 20px 110px; }
+    .hero p{ font-size:16px; }
+    .eyebrow{ font-size:12px; }
+
+    /* Tarjetas y pasos */
+    .panel-wrap{ padding:0 16px; }
+    .step{ padding:20px 18px; }
+    .step-title{ font-size:23px; }
+    .step-label{ font-size:12px; }
+    .step-value{ font-size:14px; }
+
+    /* Fechas: cuadros mas grandes */
+    .fecha-grid{ grid-template-columns:repeat(auto-fill,minmax(92px,1fr)); gap:10px; }
+    .fecha-chip{ padding:14px 8px; min-height:78px; border-width:1.5px; }
+    .fecha-chip .dia{ font-size:24px; }
+    .fecha-chip .mes{ font-size:11px; margin-top:4px; display:block; }
+
+    /* Hipodromos */
+    .hip-item{ padding:17px 16px; min-height:66px; border-width:1.5px; }
+    .hip-nombre{ font-size:19px; }
+    .hip-meta{ font-size:12px; }
+
+    /* Carreras */
+    .carrera-grid{ grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:11px; }
+    .carrera-item{ padding:15px 15px; min-height:74px; border-width:1.5px; }
+    .carrera-item .tit{ font-size:17px; }
+    .carrera-item .num{ font-size:12px; }
+
+    /* Competidores */
+    .comp-item{ padding:15px 15px; min-height:68px; border-width:1.5px; }
+    .silk{ width:40px; height:40px; font-size:16px; }
+    .comp-nombre{ font-size:18px; }
+    .comp-jinete{ font-size:12px; }
+    .comp-peso{ font-size:14px; }
+
+    /* Pronostico */
+    .pron-row{ padding:15px 15px; }
+    .pron-pos{ font-size:23px; width:32px; }
+    .pron-nombre{ font-size:17px; }
+    .pron-pct{ font-size:15px; width:56px; }
+    .pron-bar-bg{ height:8px; }
+
+    /* Ficha del caballo */
+    .ficha{ padding:26px 20px 34px; }
+    .ficha-nombre{ font-size:27px; }
+    .ficha-sub{ font-size:13px; }
+    .ficha-section h4{ font-size:12px; }
+    .r-val{ font-size:21px; }
+    .r-rot{ font-size:10px; }
+    .logro{ font-size:14px; }
+    .pedigree{ font-size:13px; }
+    .carrera-cab{ padding:14px 14px; }
+    .puesto-bola{ width:36px; height:36px; font-size:15px; }
+    .carrera-l1{ font-size:16px; }
+    .carrera-l2{ font-size:11.5px; }
+    .btn-video{ width:40px; height:40px; font-size:15px; }
+    .carrera-extra{ font-size:12px; }
+    .cond-txt{ font-size:13px; }
+    .ficha-close{ font-size:26px; top:14px; right:14px; padding:6px; }
+
+    /* Buscador */
+    .buscador-fila input{ font-size:17px; padding:16px 15px; }
+    .sug-item{ padding:14px 15px; }
+    .sug-nombre{ font-size:17px; }
+    .sug-detalle{ font-size:11.5px; }
+    .ayuda{ font-size:12px; }
+    .limpiar{ font-size:20px; top:15px; }
+
+    /* Seguir caballo */
+    .seguir-btn{ font-size:15px; padding:15px 16px; min-height:54px; }
+    .seg-item{ padding:14px 0; }
+    .seg-nombre{ font-size:17px; }
+
+    /* Cartel de carga */
+    .barra-top{ padding:18px 17px 16px; }
+    .carga-titulo{ font-size:18px; }
+    .carga-paso{ font-size:12px; }
+    .caballito{ width:40px; height:40px; }
+
+    /* Mensajes */
+    .estado-msg{ font-size:14px; padding:16px 4px; }
+    .aviso-demo p{ font-size:12px; }
+  }
+
+  /* Pantallas muy angostas */
+  @media (max-width:400px){
+    .fecha-grid{ grid-template-columns:repeat(3,1fr); }
+    .carrera-grid{ grid-template-columns:1fr 1fr; }
+    .hero h1{ font-size:38px; }
+    .step-title{ font-size:21px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <svg class="horse-svg" viewBox="0 0 500 400" xmlns="http://www.w3.org/2000/svg">
+    <g stroke="#2a5a50" stroke-width="1" opacity="0.5">
+      <line x1="0" y1="60" x2="500" y2="60"/>
+      <line x1="0" y1="340" x2="500" y2="340"/>
+      <line x1="60" y1="0" x2="60" y2="400"/>
+      <circle cx="60" cy="60" r="3" fill="#2a5a50"/>
+      <circle cx="60" cy="340" r="3" fill="#2a5a50"/>
+    </g>
+    <g fill="none" stroke="#d9b877" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round">
+      <polygon points="330,90 365,105 372,140 350,160 320,150 310,115" fill="#1f4a42"/>
+      <circle cx="345" cy="120" r="5" fill="#8c2a2a" stroke="none"/>
+      <circle cx="345" cy="120" r="9" fill="none" stroke="#d9b877" stroke-width="1.4"/>
+      <polygon points="320,150 350,160 340,210 300,205" fill="#1f4a42"/>
+      <polygon points="300,205 340,210 355,260 300,290 230,280 220,220" fill="#1f4a42"/>
+      <line x1="250" y1="230" x2="300" y2="240" stroke="#8c2a2a" stroke-width="1.4"/>
+      <line x1="260" y1="255" x2="310" y2="258" stroke="#8c2a2a" stroke-width="1.4"/>
+      <circle cx="290" cy="245" r="3" fill="#d9b877" stroke="none"/>
+      <polyline points="240,270 235,310 245,345 240,375"/>
+      <polyline points="290,285 300,320 295,350 305,378"/>
+      <polyline points="330,255 350,290 345,325 358,365"/>
+      <polyline points="300,290 320,320 312,350 325,382"/>
+      <polyline points="310,100 300,120 312,135 302,155 314,168"/>
+      <polyline points="228,225 205,235 215,255 195,268 208,290"/>
+    </g>
+    <g fill="#d9b877" opacity="0.7">
+      <circle cx="120" cy="90" r="2"/>
+      <circle cx="150" cy="70" r="1.5"/>
+      <circle cx="90" cy="130" r="1.5"/>
+      <circle cx="400" cy="200" r="2"/>
+      <circle cx="430" cy="170" r="1.5"/>
+    </g>
+  </svg>
+  <div class="hero-inner">
+    <div class="brand">LEA WIN <span>IA</span></div>
+    <div class="eyebrow">San Isidro · Palermo · La Plata</div>
+    <h1>Lea la carrera<br><em>antes</em> de la carrera</h1>
+    <p>Calendario oficial, fichas de cada ejemplar con su campaña completa, y un pronóstico transparente de los primeros cuatro puestos apenas se publica la reunión.</p>
+    <div class="hero-actions">
+      <button class="btn btn-primary" onclick="document.getElementById('buscar').scrollIntoView({behavior:'smooth'}); abrirPaso('paso-fecha');">Buscar carrera</button>
+      <button class="btn btn-ghost" onclick="abrirBuscadorCaballo()">🔍 Buscar caballo</button>
+      <button class="btn btn-ghost" onclick="abrirSeguidos()">🔔 Caballos seguidos <span id="contador-seguidos" class="contador-seg" style="display:none;">0</span></button>
+    </div>
+  </div>
+</div>
+
+<div class="panel-wrap" id="buscar">
+
+  <div class="barra-top" id="barra-top">
+    <div class="carga-fila">
+      <svg class="caballito" viewBox="0 0 100 100" fill="none">
+        <path d="M62 22 L74 27 L77 38 L70 45 L60 42 L57 31 Z" fill="#1f4a42" stroke="#d9b877" stroke-width="2.5" stroke-linejoin="round"/>
+        <circle cx="67" cy="32" r="2.6" fill="#8c2a2a"/>
+        <path d="M60 42 L70 45 L67 60 L54 58 Z" fill="#1f4a42" stroke="#d9b877" stroke-width="2.5" stroke-linejoin="round"/>
+        <path d="M54 58 L67 60 L71 76 L54 85 L34 82 L31 62 Z" fill="#1f4a42" stroke="#d9b877" stroke-width="2.5" stroke-linejoin="round"/>
+        <path d="M38 78 L36 90" stroke="#d9b877" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M54 85 L58 95" stroke="#d9b877" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M67 74 L73 90" stroke="#d9b877" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M31 64 L20 68 L24 76" stroke="#d9b877" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M57 27 L52 34 L57 40" stroke="#d9b877" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div class="carga-texto">
+        <div class="carga-titulo" id="carga-titulo">Trabajando</div>
+        <div class="carga-paso" id="barra-top-txt">Un momento<span class="puntos"></span></div>
+      </div>
+    </div>
+    <div class="pista-carga"><div></div></div>
+  </div>
+
+  <!-- BUSCADOR DE CABALLO -->
+  <div class="card" id="card-buscador" style="display:none;">
+    <div class="step open" id="paso-buscador">
+      <div class="step-head" onclick="toggle('paso-buscador')">
+        <div>
+          <div class="step-label">Buscar caballo</div>
+          <h3 class="step-title">Escribí el nombre</h3>
+        </div>
+        <span class="chev">⌄</span>
+      </div>
+      <div class="step-body">
+        <div class="buscador-caja">
+          <div class="buscador-envoltura">
+            <div class="buscador-fila">
+              <input type="text" id="q-caballo" placeholder="Empezá a escribir…" autocomplete="off">
+              <button class="limpiar" id="limpiar-caballo" onclick="limpiarBuscador()">✕</button>
+            </div>
+            <div class="sugerencias" id="sug-caballo"></div>
+          </div>
+          <div class="ayuda">Desde 3 letras empieza a buscar solo.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASO 1: FECHA -->
+  <div class="card">
+    <div class="step open" id="paso-fecha">
+      <div class="step-head" onclick="toggle('paso-fecha')">
+        <div>
+          <div class="step-label">Paso 1</div>
+          <h3 class="step-title">Elegí la fecha</h3>
+        </div>
+        <span class="chev">⌄</span>
+      </div>
+      <div class="step-body">
+        <div class="fecha-grid" id="fecha-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASO 2: HIPODROMO -->
+  <div class="card" id="card-hip" style="display:none;">
+    <div class="step" id="paso-hip">
+      <div class="step-head" onclick="toggle('paso-hip')">
+        <div>
+          <div class="step-label">Paso 2</div>
+          <h3 class="step-title">Elegí el hipódromo</h3>
+          <div class="step-value" id="fecha-elegida-txt"></div>
+        </div>
+        <span class="chev">⌄</span>
+      </div>
+      <div class="step-body">
+        <div class="hip-list" id="hip-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASO 3: CARRERAS -->
+  <div class="card" id="card-carreras" style="display:none;">
+    <div class="step" id="paso-carreras">
+      <div class="step-head" onclick="toggle('paso-carreras')">
+        <div>
+          <div class="step-label">Paso 3</div>
+          <h3 class="step-title">Elegí la carrera</h3>
+          <div class="step-value" id="hip-elegido-txt"></div>
+        </div>
+        <span class="chev">⌄</span>
+      </div>
+      <div class="step-body">
+        <div class="carrera-grid" id="carrera-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASO 4: COMPETIDORES + PRONOSTICO -->
+  <div class="card" id="card-comp" style="display:none;">
+    <div class="step" id="paso-comp">
+      <div class="step-head" onclick="toggle('paso-comp')">
+        <div>
+          <div class="step-label">Paso 4</div>
+          <h3 class="step-title">Competidores</h3>
+          <div class="step-value" id="carrera-elegida-txt"></div>
+        </div>
+        <span class="chev">⌄</span>
+      </div>
+      <div class="step-body">
+        <div class="comp-list" id="comp-list"></div>
+
+        <div class="ficha-section">
+          <h4>Pronóstico — primeros 4 puestos</h4>
+          <div class="pronostico" id="pronostico"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="aviso-demo">
+  <p>Datos oficiales del Stud Book Argentino · actualizados con cache de hasta 15-20 minutos.</p>
+</div>
+
+<!-- FICHA CABALLO -->
+<div class="overlay" id="overlay" onclick="if(event.target===this) cerrarFicha()">
+  <div class="ficha">
+    <button class="ficha-close" onclick="cerrarFicha()">✕</button>
+    <div class="ficha-head">
+      <div class="silk" id="ficha-silk">1</div>
+      <div>
+        <h3 class="ficha-nombre" id="ficha-nombre">—</h3>
+        <div class="ficha-sub" id="ficha-sub">—</div>
+      </div>
+    </div>
+    <div id="ficha-tags"></div>
+
+    <div class="ficha-section">
+      <h4>Datos</h4>
+      <div id="ficha-datos" style="font-size:14px; line-height:1.7;"></div>
+    </div>
+
+    <div class="ficha-section">
+      <h4>Campaña — carreras corridas</h4>
+      <div id="ficha-campana"></div>
+    </div>
+
+    <button class="seguir-btn" id="btn-seguir" onclick="toggleSeguir()">🔔 Seguir a este caballo</button>
+  </div>
+</div>
+
+<div class="seg-overlay" id="seg-overlay" onclick="if(event.target===this) cerrarSeguidos()">
+  <div class="seg-panel">
+    <button class="ficha-close" onclick="cerrarSeguidos()">✕</button>
+    <h3 style="margin-top:0;">Caballos seguidos</h3>
+    <div id="seg-lista"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ============================================================
+// LEA WIN IA — conectado a datos reales del backend (/api/*)
+// ============================================================
+
+const silks = ['#8c2a2a','#153832','#b6904f','#2b4a8c','#5c2b8c','#2b8c6b'];
+const mesesLargo = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+const diasCorto = ['DOM','LUN','MAR','MIE','JUE','VIE','SAB'];
+
+let calendarioCache = [];      // reuniones tal como las devuelve /api/calendario
+let fechaElegida = null;
+let hipodromoElegido = null;   // {hipodromo, url}
+let carreraElegida = null;     // {numero, titulo}
+let meetingUrlElegida = null;  // url de la reunion (para pedir /api/carrera)
+let participantesActuales = [];
+let caballoActual = null;
+let seguidos = [];
+
+function estadoMsg(texto, esError=false){
+  return `<div class="estado-msg${esError?' error':''}">${esError?'':'<span class="spinner"></span>'}${texto}</div>`;
 }
 
-function cargarFechas(){
- seleccion.classList.add('hidden');
- reuniones=[];
- const nombre=hipodromo.value;
-
- if(!nombre){
-  fecha.disabled=true;
-  fecha.innerHTML=
-   '<option value="">Primero elegí el hipódromo</option>';
-  estado.textContent='Elegí el hipódromo.';
-  return;
- }
-
- const fechas=[...new Set(
-  calendario
-   .filter(item=>item.hipodromo===nombre)
-   .map(item=>item.fecha)
- )].sort().reverse();
-
- fecha.disabled=false;
- fecha.innerHTML=
-  '<option value="">Elegí una fecha de reunión</option>'+
-  fechas.map(valor=>
-   `<option value="${valor}">${textoFecha(valor)}</option>`
-  ).join('');
-
- estado.textContent=fechas.length
-  ?'Elegí una fecha disponible.'
-  :'No hay fechas disponibles para este hipódromo.';
+async function apiGet(url){
+  const r = await fetch(url);
+  const data = await r.json();
+  if (!r.ok || data.ok === false) throw new Error(data.error || 'Error de conexión con el servidor.');
+  return data;
 }
-
-async function buscarFecha(){
- seleccion.classList.add('hidden');
- reuniones=[];
-
- if(!hipodromo.value||!fecha.value){
-  estado.textContent='Elegí hipódromo y fecha.';
-  return;
- }
-
- estado.textContent='Buscando carreras del día...';
-
- try{
-  const parametros=new URLSearchParams({
-   fecha:fecha.value,
-   hipodromo:hipodromo.value
+async function apiPost(url, body){
+  const r = await fetch(url, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
   });
-  const respuesta=await fetchConTiempo(
-   '/api/reuniones?'+parametros
-  );
-  const datos=await respuesta.json();
+  const data = await r.json();
+  if (!r.ok || data.ok === false) throw new Error(data.error || 'Error de conexión con el servidor.');
+  return data;
+}
 
-  if(!datos.ok||!datos.reuniones?.length){
-   estado.textContent=
-    datos.error||'No hay carreras confirmadas.';
-   return;
+function toggle(id){ document.getElementById(id).classList.toggle('open'); }
+function abrirPaso(id){ document.getElementById(id).classList.add('open'); }
+
+// ---------- PASO 1: calendario ----------
+async function cargarCalendario(){
+  const grid = document.getElementById('fecha-grid');
+  grid.innerHTML = estadoMsg('Consultando el calendario oficial…');
+  try{
+    const data = await apiGet('/api/calendario');
+    calendarioCache = data.reuniones || [];
+    if (calendarioCache.length === 0){
+      grid.innerHTML = estadoMsg('No hay reuniones publicadas por ahora.', true);
+      return;
+    }
+    const fechasUnicas = [...new Set(calendarioCache.map(r => r.fecha))].sort();
+    grid.innerHTML = '';
+    fechasUnicas.forEach(f=>{
+      const d = new Date(f + 'T00:00:00');
+      const chip = document.createElement('div');
+      chip.className = 'fecha-chip';
+      chip.innerHTML = `<span class="dia">${d.getDate()}</span><span class="mes">${diasCorto[d.getDay()]} ${mesesLargo[d.getMonth()].slice(0,3).toUpperCase()}</span>`;
+      chip.onclick = ()=> elegirFecha(f, d, chip);
+      grid.appendChild(chip);
+    });
+    if (data.aviso){
+      grid.innerHTML += estadoMsg(data.aviso, true);
+    }
+  }catch(e){
+    grid.innerHTML = estadoMsg('No se pudo cargar el calendario oficial. ' + e.message, true);
+  }
+}
+
+function elegirFecha(fecha, d, chipEl){
+  fechaElegida = fecha;
+  document.querySelectorAll('.fecha-chip').forEach(c=>c.classList.remove('sel'));
+  chipEl.classList.add('sel');
+  document.getElementById('fecha-elegida-txt').textContent = `${d.getDate()} de ${mesesLargo[d.getMonth()]}`;
+
+  const hips = calendarioCache.filter(r => r.fecha === fecha);
+  const list = document.getElementById('hip-list');
+  list.innerHTML = '';
+  if (hips.length === 0){
+    list.innerHTML = estadoMsg('No hay hipódromos con reunión esa fecha.', true);
+  } else {
+    hips.forEach(h=>{
+      const item = document.createElement('div');
+      item.className = 'hip-item';
+      item.innerHTML = `<div><div class="hip-nombre">${h.hipodromo}</div><div class="hip-meta">Reunión oficial</div></div><span class="chev">→</span>`;
+      item.onclick = ()=> elegirHip(h, item);
+      list.appendChild(item);
+    });
   }
 
-  reuniones=datos.reuniones;
-  cargarCarreras();
-  seleccion.classList.remove('hidden');
-  estado.textContent='Elegí la carrera.';
-
- }catch(error){
-  estado.textContent=error.name==='AbortError'
-   ?'La consulta tardó demasiado. Intentá más tarde.'
-   :'No se pudieron consultar las carreras.';
- }
+  document.getElementById('card-hip').style.display = 'block';
+  document.querySelectorAll('.step').forEach(s=>s.classList.remove('open'));
+  document.getElementById('paso-hip').classList.add('open');
+  document.getElementById('card-carreras').style.display = 'none';
+  document.getElementById('card-comp').style.display = 'none';
 }
 
-function cargarCarreras(){
- const reunion=reuniones[0];
- carrera.innerHTML=(reunion?.carreras||[])
-  .map(item=>
-   `<option value="${item.numero}">${esc(item.titulo)}</option>`
-  ).join('');
+// ---------- PASO 2 -> 3: reuniones/carreras de ese hipódromo ----------
+async function elegirHip(h, itemEl){
+  hipodromoElegido = h;
+  document.querySelectorAll('.hip-item').forEach(c=>c.classList.remove('sel'));
+  itemEl.classList.add('sel');
+  document.getElementById('hip-elegido-txt').textContent = h.hipodromo;
+
+  document.getElementById('card-carreras').style.display = 'block';
+  document.querySelectorAll('.step').forEach(s=>s.classList.remove('open'));
+  document.getElementById('paso-carreras').classList.add('open');
+  document.getElementById('card-comp').style.display = 'none';
+
+  const gridC = document.getElementById('carrera-grid');
+  gridC.innerHTML = estadoMsg('Buscando las carreras de la reunión…');
+
+  try{
+    const url = `/api/reuniones?fecha=${encodeURIComponent(fechaElegida)}&hipodromo=${encodeURIComponent(h.hipodromo)}`;
+    const data = await apiGet(url);
+    const reunion = (data.reuniones || [])[0];
+    if (!reunion || !reunion.carreras || reunion.carreras.length === 0){
+      gridC.innerHTML = estadoMsg('Todavía no hay carreras confirmadas para esa reunión.', true);
+      return;
+    }
+    meetingUrlElegida = reunion.url;
+    gridC.innerHTML = '';
+    reunion.carreras.forEach(c=>{
+      const item = document.createElement('div');
+      item.className = 'carrera-item';
+      item.innerHTML = `<div class="num">Nº ${c.numero}</div><div class="tit">${c.titulo}</div>`;
+      item.onclick = ()=> elegirCarrera(c, item);
+      gridC.appendChild(item);
+    });
+    if (data.aviso){ gridC.innerHTML += estadoMsg(data.aviso, true); }
+  }catch(e){
+    gridC.innerHTML = estadoMsg('No se pudo cargar la reunión. ' + e.message, true);
+  }
 }
-async function cargarCarrera(){const reu=reuniones[0];estado.textContent='Cargando participantes...';const q=new URLSearchParams({url:reu.url,numero:carrera.value});const r=await fetch('/api/carrera?'+q);const d=await r.json();if(!d.ok){estado.textContent=d.error;return}actual={fecha:fecha.value,hipodromo:reu.hipodromo,numero:d.carrera,premio:d.premio,distancia:d.distancia||null,superficie:d.superficie,estado_publicado:d.estado,condicion:d.condicion,participantes:d.participantes};meta.innerHTML=`<b>${d.premio||''}</b><br>${d.distancia||'?'} m · ${d.superficie||''} · ${d.estado||''}`;render();estado.textContent=d.participantes.length+' participantes cargados.';go('datos')}
-function aplicarRetiros(){if(!actual)return;const set=new Set(retiros.value.split(',').map(x=>x.trim()).filter(Boolean));actual.participantes.forEach(p=>p.retirado=set.has(String(p.numero)));render()}
-function render(){lista.innerHTML=actual.participantes.map(p=>`<div class="horse ${p.retirado?'retired':''}"><span class="num">${p.numero||'?'}</span><b>${p.nombre}</b>${p.retirado?' · RETIRADO':''}<div class="small">${p.campana||p.detalle||''}</div><button class="secondary" onclick="video('${p.nombre.replaceAll("'","")}')">Buscar videos</button></div>`).join('')}
-async function enriquecer(){estado.textContent='Cargando campañas...';const r=await fetch('/api/enriquecer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({participantes:actual.participantes})});const d=await r.json();actual.participantes=d.participantes;render();estado.textContent='Campañas anteriores incorporadas.'}
-async function analizar(){aplicarRetiros();const body={...actual,pista_dia:pistaDia.value,clima:clima.value,viento:viento.value,observaciones:observaciones.value};const r=await fetch('/api/analizar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!d.ok){ranking.textContent=d.error;go('analisis');return}ultimoAnalisis=d;ranking.innerHTML=d.ranking.map((x,i)=>`<div class="rank"><b>${i+1}.º · N.º ${x.numero||'?'} — ${x.nombre}</b><br>Score: ${x.score}/100 · Probabilidad relativa: ${x.probabilidad_relativa}%<div class="small">${x.motivos.join(' · ')||'Sin motivos suficientes detectados'}</div></div>`).join('');go('analisis');await guardar()}
-async function guardar(){if(!actual||!ultimoAnalisis){ranking.textContent='Primero analizá la carrera.';return}const body={...actual,pista_dia:pistaDia.value,clima:clima.value,viento:viento.value,retiros:actual.participantes.filter(x=>x.retirado).map(x=>x.numero),observaciones:observaciones.value,analisis:ultimoAnalisis};const r=await fetch('/api/guardar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();ranking.innerHTML+=`<div class="status">${d.mensaje||d.error}</div>`}
-async function cargarHistorial(){const r=await fetch('/api/historial');const d=await r.json();historialLista.innerHTML=d.carreras.map(x=>`<div class="horse"><b>${x.fecha} · ${x.hipodromo} · Carrera ${x.numero}</b><br>${x.premio||''}</div>`).join('')}
-async function video(nombre){const r=await fetch('/api/videos?caballo='+encodeURIComponent(nombre));const d=await r.json();if(d.modo==='api'&&d.videos.length){lista.innerHTML+=d.videos.map(v=>`<div class="horse"><iframe width="100%" height="220" src="https://www.youtube.com/embed/${v.id}" allowfullscreen></iframe><div>${v.titulo}</div></div>`).join('')}else{window.open(d.url,'_blank')}}
-if('serviceWorker'in navigator)navigator.serviceWorker.register('/static/sw.js');
-document.addEventListener('DOMContentLoaded',cargarCalendario);
-</script></body></html>
+
+// ---------- PASO 4: competidores + enriquecimiento + análisis ----------
+async function elegirCarrera(c, itemEl){
+  carreraElegida = c;
+  document.querySelectorAll('.carrera-item').forEach(x=>x.classList.remove('sel'));
+  itemEl.classList.add('sel');
+  document.getElementById('carrera-elegida-txt').textContent = c.titulo;
+
+  document.getElementById('card-comp').style.display = 'block';
+  document.querySelectorAll('.step').forEach(s=>s.classList.remove('open'));
+  document.getElementById('paso-comp').classList.add('open');
+
+  const list = document.getElementById('comp-list');
+  const pron = document.getElementById('pronostico');
+  list.innerHTML = estadoMsg('Cargando participantes…');
+  pron.innerHTML = '';
+  mostrarBarra('Buscando los participantes', 'Abriendo la carrera');
+
+  let carreraData;
+  try{
+    const url = `/api/carrera?url=${encodeURIComponent(meetingUrlElegida)}&numero=${c.numero}`;
+    carreraData = await apiGet(url);
+  }catch(e){
+    ocultarBarra();
+    list.innerHTML = estadoMsg('No se pudo cargar la carrera. ' + e.message, true);
+    return;
+  }
+
+  participantesActuales = carreraData.participantes || [];
+  if (participantesActuales.length === 0){
+    ocultarBarra();
+    list.innerHTML = estadoMsg('Todavía no hay participantes confirmados para esta carrera.', true);
+    return;
+  }
+
+  renderCompetidores(participantesActuales);
+
+  // Enriquecer (campaña) y luego pedir el análisis.
+  const n = participantesActuales.length;
+  mostrarBarra(`Campaña de ${n} participantes`, 'Analizando la carrera');
+  pron.innerHTML = estadoMsg('Calculando el pronóstico…');
+  try{
+    const enriquecidos = await apiPost('/api/enriquecer', {participantes: participantesActuales});
+    participantesActuales = enriquecidos.participantes;
+    renderCompetidores(participantesActuales);
+
+    mostrarBarra('Cruzando los datos', 'Calculando el pronóstico');
+    const contexto = {
+      pista_dia: carreraData.estado || '',
+      url: meetingUrlElegida,
+      numero: c.numero,
+      fecha: fechaElegida,
+      hipodromo: hipodromoElegido ? hipodromoElegido.hipodromo : '',
+    };
+    const analisis = await apiPost('/api/analizar', {...contexto, participantes: participantesActuales});
+    renderPronostico(analisis.ranking || []);
+  }catch(e){
+    pron.innerHTML = estadoMsg('No se pudo calcular el pronóstico. ' + e.message, true);
+  }finally{
+    ocultarBarra();
+  }
+}
+
+function mostrarBarra(texto, titulo){
+  const b = document.getElementById('barra-top');
+  if (titulo) document.getElementById('carga-titulo').textContent = titulo;
+  document.getElementById('barra-top-txt').innerHTML =
+    texto + '<span class="puntos"></span>';
+  b.classList.add('visible');
+}
+function ocultarBarra(){
+  document.getElementById('barra-top').classList.remove('visible');
+}
+
+function renderCompetidores(participantes){
+  const list = document.getElementById('comp-list');
+  list.innerHTML = '';
+  participantes.forEach((cp,idx)=>{
+    const row = document.createElement('div');
+    row.className = 'comp-item';
+    const numDisplay = cp.numero != null ? cp.numero : (idx+1);
+    const subtitulo = cp.retirado
+      ? 'RETIRADO — no corre'
+      : [cp.jockey, cp.entrenador].filter(Boolean).join(' · ') || 'Sin datos de jockey';
+    row.style.opacity = cp.retirado ? '0.45' : '1';
+    row.innerHTML = `
+      <div class="silk" style="background:${cp.retirado ? '#999' : silks[idx % silks.length]}">${numDisplay}</div>
+      <div>
+        <div class="comp-nombre">${cp.nombre}</div>
+        <div class="comp-jinete">${subtitulo}</div>
+      </div>
+      <div class="comp-peso">${cp.peso ? cp.peso + ' kg' : ''}</div>`;
+    row.onclick = ()=> abrirFicha(cp, idx);
+    list.appendChild(row);
+  });
+}
+
+function renderPronostico(ranking){
+  const pron = document.getElementById('pronostico');
+  pron.innerHTML = '';
+  if (ranking.length === 0){
+    pron.innerHTML = estadoMsg('No hay suficientes participantes confirmados para pronosticar.', true);
+    return;
+  }
+  ranking.forEach((p,i)=>{
+    const row = document.createElement('div');
+    row.className = 'pron-row';
+    row.innerHTML = `
+      <div class="pron-pos">${i+1}º</div>
+      <div class="pron-bar-wrap">
+        <div class="pron-nombre">${p.nombre}</div>
+        <div class="pron-bar-bg"><div class="pron-bar" style="width:${Math.min(100,p.probabilidad_relativa*2.2)}%"></div></div>
+      </div>
+      <div class="pron-pct">${p.probabilidad_relativa}%</div>`;
+    pron.appendChild(row);
+  });
+}
+
+// ---------- Buscador de caballo con autocompletado ----------
+let tempBusqueda = null;
+let sugActivo = -1;
+let sugUltimos = [];
+let sugPeticion = 0;
+
+function abrirBuscadorCaballo(){
+  document.getElementById('card-buscador').style.display = 'block';
+  document.getElementById('paso-buscador').classList.add('open');
+  document.getElementById('buscar').scrollIntoView({behavior:'smooth'});
+  setTimeout(()=> document.getElementById('q-caballo').focus(), 400);
+}
+
+function normalizarTexto(s){
+  return (s||'').toLowerCase()
+    .replace(/á/g,'a').replace(/é/g,'e').replace(/í/g,'i')
+    .replace(/ó/g,'o').replace(/ú/g,'u').replace(/ü/g,'u');
+}
+
+function iniciarBuscador(){
+  const inp = document.getElementById('q-caballo');
+  const sug = document.getElementById('sug-caballo');
+  const btnLimpiar = document.getElementById('limpiar-caballo');
+  if (!inp) return;
+
+  inp.addEventListener('input', ()=>{
+    btnLimpiar.classList.toggle('visible', inp.value.length > 0);
+    clearTimeout(tempBusqueda);
+    const q = inp.value.trim();
+    if (q.length < 3){
+      sug.classList.remove('visible');
+      sug.innerHTML = '';
+      return;
+    }
+    sug.classList.add('visible');
+    sug.innerHTML = '<div class="sug-estado"><div class="spin"></div>Buscando…</div>';
+    // Esperar a que termine de escribir, para no consultar en cada letra.
+    tempBusqueda = setTimeout(()=> consultarSugerencias(q), 420);
+  });
+
+  inp.addEventListener('keydown', e=>{
+    const items = sug.querySelectorAll('.sug-item');
+    if (!items.length) return;
+    if (e.key === 'ArrowDown'){
+      e.preventDefault();
+      sugActivo = Math.min(sugActivo + 1, items.length - 1);
+      marcarSugerencia(items);
+    } else if (e.key === 'ArrowUp'){
+      e.preventDefault();
+      sugActivo = Math.max(sugActivo - 1, 0);
+      marcarSugerencia(items);
+    } else if (e.key === 'Enter'){
+      e.preventDefault();
+      const elegido = sugUltimos[sugActivo >= 0 ? sugActivo : 0];
+      if (elegido) elegirSugerencia(elegido);
+    } else if (e.key === 'Escape'){
+      sug.classList.remove('visible');
+    }
+  });
+
+  document.addEventListener('click', e=>{
+    if (!e.target.closest('.buscador-envoltura')) sug.classList.remove('visible');
+  });
+}
+
+async function consultarSugerencias(q){
+  const sug = document.getElementById('sug-caballo');
+  const miNumero = ++sugPeticion;   // para descartar respuestas viejas
+  try{
+    const d = await apiGet('/api/buscar-caballo?q=' + encodeURIComponent(q));
+    if (miNumero !== sugPeticion) return;   // llegó tarde, ya escribió otra cosa
+    sugUltimos = d.resultados || [];
+    sugActivo = -1;
+    pintarSugerencias(sugUltimos, q);
+  }catch(e){
+    if (miNumero !== sugPeticion) return;
+    sugUltimos = [];
+    sug.innerHTML = '<div class="sug-estado">' + e.message + '</div>';
+  }
+}
+
+function resaltarCoincidencia(nombre, q){
+  const piezas = normalizarTexto(q).split(/\s+/).filter(Boolean);
+  let salida = nombre;
+  piezas.forEach(p=>{
+    const re = new RegExp('(' + p.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + ')', 'ig');
+    salida = salida.replace(re, '<b>$1</b>');
+  });
+  return salida;
+}
+
+function pintarSugerencias(lista, q){
+  const sug = document.getElementById('sug-caballo');
+  if (!lista.length){
+    sug.innerHTML = '<div class="sug-estado">No se encontró ningún caballo con ese nombre.</div>';
+    return;
+  }
+  const pegado = normalizarTexto(q).replace(/\s+/g,'');
+  sug.innerHTML = '';
+  lista.forEach(x=>{
+    const exacto = normalizarTexto(x.nombre).replace(/\s+/g,'') === pegado;
+    const d = document.createElement('div');
+    d.className = 'sug-item' + (exacto ? ' sug-exacto' : '');
+    d.innerHTML = `
+      <div class="sug-nombre">${resaltarCoincidencia(x.nombre, q)}${
+        exacto ? '<span class="sug-etiqueta">exacto</span>' : ''}</div>
+      ${x.detalle ? '<div class="sug-detalle">'+x.detalle+'</div>' : ''}`;
+    d.onclick = ()=> elegirSugerencia(x);
+    sug.appendChild(d);
+  });
+}
+
+function marcarSugerencia(items){
+  items.forEach((it,i)=> it.classList.toggle('activo', i === sugActivo));
+  if (items[sugActivo]) items[sugActivo].scrollIntoView({block:'nearest'});
+}
+
+function elegirSugerencia(x){
+  if (!x) return;
+  document.getElementById('q-caballo').value = x.nombre;
+  document.getElementById('sug-caballo').classList.remove('visible');
+  abrirFichaPorNombre(x.perfil);
+}
+
+function limpiarBuscador(){
+  const inp = document.getElementById('q-caballo');
+  inp.value = '';
+  document.getElementById('limpiar-caballo').classList.remove('visible');
+  document.getElementById('sug-caballo').classList.remove('visible');
+  inp.focus();
+}
+
+async function abrirFichaPorNombre(perfil){
+  mostrarBarra('Trayendo la campaña completa', 'Abriendo la ficha');
+  try{
+    const d = await apiGet('/api/caballo?perfil=' + encodeURIComponent(perfil));
+    // Reusar la misma ficha, agregandole las proximas carreras.
+    abrirFicha({
+      nombre: d.nombre,
+      numero: null,
+      perfil: d.perfil,
+      peso: '',
+      sexo: d.sexo, edad: d.edad,
+      padre: d.padre, madre: d.madre, logro: d.logro,
+      carreras: d.carreras || [],
+      corridas: d.corridas, victorias: d.victorias, podios: d.podios,
+      proximas: d.proximas || [],
+      sin_proximas: d.sin_proximas,
+    }, 0);
+  }catch(e){
+    alert('No se pudo cargar el caballo. ' + e.message);
+  }finally{
+    ocultarBarra();
+  }
+}
+
+// ---------- Ficha del caballo ----------
+function abrirFicha(cp, idx){
+  caballoActual = {...cp, idx};
+  const num = cp.numero != null ? cp.numero : (idx+1);
+  document.getElementById('ficha-silk').textContent = num;
+  document.getElementById('ficha-silk').style.background = silks[idx % silks.length];
+  document.getElementById('ficha-nombre').textContent = cp.nombre;
+
+  const sub = [];
+  if (cp.sexo) sub.push(cp.sexo);
+  if (cp.edad) sub.push(cp.edad + ' años');
+  if (cp.peso) sub.push(cp.peso + ' kg');
+  document.getElementById('ficha-sub').textContent = sub.join(' · ') || '—';
+
+  const carreras = cp.carreras || [];
+  document.getElementById('ficha-tags').innerHTML =
+    `<span class="tag">Nº ${num}</span>` +
+    (carreras.length
+      ? `<span class="tag">${carreras.length} carreras</span>`
+      : `<span class="tag">Debutante</span>`);
+
+  // --- Próximas carreras (solo cuando se llega desde el buscador) ---
+  let datos = '';
+  if (cp.proximas && cp.proximas.length){
+    datos += '<div class="proxima-caja"><div class="p-rot">Próximas carreras</div>';
+    cp.proximas.forEach(p=>{
+      datos += `<div class="proxima-item">${p.texto}</div>`;
+    });
+    datos += '</div>';
+  } else if (cp.sin_proximas){
+    datos += '<div class="sin-proxima">No tiene carreras previstas por ahora.</div>';
+  }
+
+  // --- Resumen limpio ---
+  if (carreras.length){
+    datos += `<div class="resumen-grid">
+      <div class="resumen-item"><div class="r-rot">Corridas</div><div class="r-val">${cp.corridas ?? carreras.length}</div></div>
+      <div class="resumen-item"><div class="r-rot">Ganadas</div><div class="r-val">${cp.victorias ?? 0}</div></div>
+      <div class="resumen-item"><div class="r-rot">En los 3</div><div class="r-val">${cp.podios ?? 0}</div></div>
+      <div class="resumen-item"><div class="r-rot">Lleva hoy</div><div class="r-val">${cp.peso || '—'}</div></div>
+    </div>`;
+  } else {
+    datos += `<div class="resumen-grid">
+      <div class="resumen-item"><div class="r-rot">Campaña</div><div class="r-val">Debuta</div></div>
+      <div class="resumen-item"><div class="r-rot">Lleva hoy</div><div class="r-val">${cp.peso || '—'}</div></div>
+    </div>`;
+  }
+  if (cp.logro) datos += `<div class="logro">${cp.logro}</div>`;
+  if (cp.padre || cp.madre){
+    datos += `<div class="pedigree">Padre: <b>${cp.padre || '—'}</b><br>Madre: <b>${cp.madre || '—'}</b></div>`;
+  }
+  if (cp.jockey || cp.entrenador){
+    datos += `<div class="pedigree" style="margin-top:8px;">
+      ${cp.jockey ? 'Jockey hoy: <b>'+cp.jockey+'</b><br>' : ''}
+      ${cp.entrenador ? 'Entrenador: <b>'+cp.entrenador+'</b>' : ''}</div>`;
+  }
+  datos += `<div style="margin-top:10px;"><a href="${cp.perfil}" target="_blank" rel="noopener"
+      style="color:var(--verde-turf); font-size:12px;">Ver ficha completa en Stud Book →</a></div>`;
+  document.getElementById('ficha-datos').innerHTML = datos;
+
+  // --- Carreras corridas, con video ---
+  const camp = document.getElementById('ficha-campana');
+  camp.innerHTML = '';
+  if (carreras.length === 0){
+    camp.innerHTML = '<div style="font-size:13px; opacity:.6;">Todavía no corrió ninguna carrera oficial.</div>';
+  } else {
+    carreras.forEach((c, i)=>{
+      const p = c.puesto;
+      const clasePuesto = p === 1 ? 'p1' : p === 2 ? 'p2' : p === 3 ? 'p3' : '';
+      const pistaTxt = c.pista_txt || (c.pista ? 'Pista ' + c.pista : '');
+      const estadoTxt = c.estado_txt || (c.estado ? 'Estado ' + c.estado : '');
+      const linea2 = [
+        c.distancia ? c.distancia + ' m' : '',
+        c.tiempo,
+        pistaTxt,
+        estadoTxt,
+        c.kilos ? c.kilos + ' kg' : '',
+      ].filter(Boolean).join(' · ');
+
+      const fila = document.createElement('div');
+      fila.className = 'carrera-fila';
+      fila.innerHTML = `
+        <div class="carrera-cab" onclick="alternarCarrera(${i})">
+          <div class="puesto-bola ${clasePuesto}">${p ? p+'º' : '—'}</div>
+          <div class="carrera-datos">
+            <div class="carrera-l1">${c.fecha} · ${c.hipodromo || ''} ${c.premio ? '· '+c.premio : ''}</div>
+            <div class="carrera-l2">${linea2}</div>
+          </div>
+          <button class="btn-video ${c.video ? '' : 'sin'}"
+                  title="${c.video ? 'Ver el video de esta carrera' : 'Sin video disponible'}">▶</button>
+        </div>
+        <div class="carrera-extra" id="extra-${i}"></div>
+        <div class="video-caja" id="video-${i}" data-video="${c.video || ''}"></div>`;
+      camp.appendChild(fila);
+    });
+  }
+
+  actualizarBotonSeguir();
+  document.getElementById('overlay').classList.add('show');
+}
+
+function alternarCarrera(i){
+  const caja = document.getElementById('video-' + i);
+  const extra = document.getElementById('extra-' + i);
+  const abierta = extra.classList.contains('abierta');
+
+  if (abierta){
+    caja.classList.remove('abierta');
+    extra.classList.remove('abierta');
+    caja.innerHTML = '';   // cortar la reproduccion al cerrar
+    return;
+  }
+
+  extra.classList.add('abierta');
+
+  // Video: se ve acá adentro, no manda a YouTube.
+  const id = caja.dataset.video;
+  if (id){
+    caja.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&modestbranding=1"
+      allow="accelerometer; autoplay; encrypted-media; picture-in-picture"
+      allowfullscreen></iframe>`;
+    caja.classList.add('abierta');
+  }
+
+  // Traer pista, estado y condición en palabras (solo de esta carrera).
+  const carrera = (caballoActual.carreras || [])[i];
+  if (carrera) cargarDetalleCarrera(i, carrera);
+}
+
+function pintarExtra(i, c){
+  const extra = document.getElementById('extra-' + i);
+  if (!extra) return;
+  extra.innerHTML =
+    (c.numero ? 'Número que llevó: <b>'+c.numero+'</b> · ' : '') +
+    (c.jockey ? 'Jockey: <b>'+c.jockey+'</b>' : '') +
+    (c.caballeriza ? '<br>Caballeriza: <b>'+c.caballeriza+'</b>' : '') +
+    (c.categoria_txt ? '<br>Categoría: <b>'+c.categoria_txt+'</b>' : '') +
+    (c.condicion_txt
+      ? '<div class="cond-txt">Condición: '+c.condicion_txt+'</div>'
+      : (c.condicion ? '<br>Condición: '+c.condicion : ''));
+}
+
+async function cargarDetalleCarrera(i, c){
+  // Si ya lo trajimos antes, se pinta y listo.
+  if (c.condicion_txt !== undefined){
+    pintarExtra(i, c);
+    return;
+  }
+  if (!c.enlace){
+    c.condicion_txt = '';
+    pintarExtra(i, c);
+    return;
+  }
+
+  const extra = document.getElementById('extra-' + i);
+  pintarExtra(i, c);
+  extra.innerHTML += '<div class="cargando-linea"><div class="spin"></div>Buscando pista y condición…</div>';
+
+  try{
+    const d = await apiGet('/api/detalle-carrera?url=' + encodeURIComponent(c.enlace));
+    c.condicion_txt = d.condicion_txt || '';
+    c.pista_txt = d.pista_txt || '';
+    c.estado_txt = d.estado_txt || '';
+    c.categoria_txt = d.categoria_txt || '';
+    // Actualizar también la línea de arriba con pista y estado en palabras.
+    const l2 = document.querySelector(`#extra-${i}`).parentElement
+                 .querySelector('.carrera-l2');
+    if (l2){
+      const partes = [
+        c.distancia ? c.distancia + ' m' : '',
+        c.tiempo,
+        c.pista_txt || (c.pista ? 'Pista ' + c.pista : ''),
+        c.estado_txt || (c.estado ? 'Estado ' + c.estado : ''),
+        c.kilos ? c.kilos + ' kg' : '',
+      ].filter(Boolean);
+      l2.textContent = partes.join(' · ');
+    }
+  }catch(e){
+    c.condicion_txt = '';
+  }
+  pintarExtra(i, c);
+}
+function cerrarFicha(){ document.getElementById('overlay').classList.remove('show'); }
+
+// ---------- Seguir caballo (solo visual por ahora, sin backend/login todavía) ----------
+function actualizarBotonSeguir(){
+  const btn = document.getElementById('btn-seguir');
+  const yaSigue = seguidos.some(s => s.nombre === caballoActual.nombre);
+  btn.textContent = yaSigue ? '✓ Siguiendo — te avisamos cuando vuelva a correr' : '🔔 Seguir a este caballo';
+  btn.classList.toggle('activo', yaSigue);
+}
+function toggleSeguir(){
+  const yaSigue = seguidos.some(s => s.nombre === caballoActual.nombre);
+  if (yaSigue){
+    seguidos = seguidos.filter(s => s.nombre !== caballoActual.nombre);
+    mostrarToast(`Dejaste de seguir a ${caballoActual.nombre}.`);
+  } else {
+    seguidos.push({nombre: caballoActual.nombre, num: caballoActual.numero});
+    mostrarToast(`Vas a recibir una notificación apenas se confirme cuándo vuelve a correr ${caballoActual.nombre}. (Función completa disponible cuando agreguemos login)`);
+  }
+  actualizarBotonSeguir();
+  actualizarContadorSeguidos();
+}
+function actualizarContadorSeguidos(){
+  const c = document.getElementById('contador-seguidos');
+  if (seguidos.length > 0){ c.style.display = 'inline'; c.textContent = seguidos.length; }
+  else { c.style.display = 'none'; }
+}
+function mostrarToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(()=> t.classList.remove('show'), 3600);
+}
+function abrirSeguidos(){
+  const lista = document.getElementById('seg-lista');
+  lista.innerHTML = '';
+  if (seguidos.length === 0){
+    lista.innerHTML = '<div class="seg-empty">Todavía no seguís ningún caballo.<br>Abrí la ficha de un competidor y tocá "Seguir a este caballo".</div>';
+  } else {
+    seguidos.forEach(s=>{
+      const row = document.createElement('div');
+      row.className = 'seg-item';
+      row.innerHTML = `
+        <div class="silk" style="background:${silks[(s.num||1) % silks.length]}; width:30px; height:30px; font-size:12px;">${s.num||'—'}</div>
+        <div class="seg-info">
+          <div class="seg-nombre">${s.nombre}</div>
+          <div class="seg-aviso">Notificaciones activas cuando haya login</div>
+        </div>
+        <button class="seg-quitar" onclick="quitarSeguido('${s.nombre.replace(/'/g,"\\'")}')">✕</button>`;
+      lista.appendChild(row);
+    });
+  }
+  document.getElementById('seg-overlay').classList.add('show');
+}
+function cerrarSeguidos(){ document.getElementById('seg-overlay').classList.remove('show'); }
+function quitarSeguido(nombre){
+  seguidos = seguidos.filter(s => s.nombre !== nombre);
+  actualizarContadorSeguidos();
+  abrirSeguidos();
+}
+
+// ---------- Arranque ----------
+cargarCalendario();
+iniciarBuscador();
+</script>
+</body>
+</html>
