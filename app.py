@@ -1,8 +1,8 @@
 
 from flask import Flask, render_template, request, jsonify
-import requests, re, sqlite3, json, os
+import requests, re, sqlite3, json, os, time, threading
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, quote_plus
+from urllib.parse import urljoin, quote_plus, quote
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
@@ -13,8 +13,6 @@ HEADERS = {
 }
 DB = os.getenv("LEA_DB", "lea_win.db")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
-SYNC_TOKEN = os.getenv("LEA_SYNC_TOKEN", "")
-DEFAULT_USER = os.getenv("LEA_DEFAULT_USER", "usuario-local")
 
 def clean(v):
     return re.sub(r"\s+", " ", v or "").strip()
@@ -29,17 +27,6 @@ def db():
     con.row_factory = sqlite3.Row
     return con
 
-def ensure_column(con, table, column, definition):
-    columns = {
-        row["name"]
-        for row in con.execute(f"PRAGMA table_info({table})").fetchall()
-    }
-    if column not in columns:
-        con.execute(
-            f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
-        )
-
-
 def init_db():
     con = db()
     con.executescript("""
@@ -52,25 +39,79 @@ def init_db():
       resultado_real TEXT, creado_en TEXT NOT NULL,
       UNIQUE(fecha,hipodromo,numero)
     );
-
-    CREATE TABLE IF NOT EXISTS analisis_usuarios(
+    CREATE TABLE IF NOT EXISTS cache(
+      clave TEXT PRIMARY KEY,
+      valor TEXT NOT NULL,
+      actualizado_en TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS pronosticos(
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      carrera_id INTEGER NOT NULL,
-      usuario_id TEXT NOT NULL,
-      datos_manuales TEXT NOT NULL,
-      analisis TEXT NOT NULL,
+      url TEXT NOT NULL, numero INTEGER NOT NULL,
+      fecha TEXT, hipodromo TEXT,
+      ranking TEXT NOT NULL,        -- lo que predijo la app
+      resultado TEXT,               -- puestos reales, cuando la carrera se corre
+      acierto_ganador INTEGER,      -- 1 si acerto el 1o, 0 si no, NULL si no corrio
+      aciertos_top4 INTEGER,        -- cuantos de los 4 predichos entraron entre los 4
+      pesos_usados TEXT,            -- version del algoritmo con la que se predijo
       creado_en TEXT NOT NULL,
-      actualizado_en TEXT NOT NULL,
-      UNIQUE(carrera_id,usuario_id),
-      FOREIGN KEY(carrera_id) REFERENCES carreras(id)
+      comparado_en TEXT,
+      UNIQUE(url,numero)
+    );
+    CREATE TABLE IF NOT EXISTS algoritmo(
+      clave TEXT PRIMARY KEY,
+      valor REAL NOT NULL,
+      actualizado_en TEXT NOT NULL
     );
     """)
-    ensure_column(con, "carreras", "comparacion", "TEXT")
-    ensure_column(con, "carreras", "analisis_generado_en", "TEXT")
-    ensure_column(con, "carreras", "resultado_actualizado_en", "TEXT")
-    ensure_column(con, "carreras", "actualizado_en", "TEXT")
     con.commit()
     con.close()
+
+# --- Cache genérico con TTL, para no depender de scrapear en cada request ---
+TTL_CALENDARIO = 2 * 60 * 60      # 2hs: el calendario cambia poco
+TTL_REUNION = 15 * 60              # 15 min: carreras/participantes del día
+TTL_CARRERA = 15 * 60
+
+def cache_get(clave, ttl_seg):
+    con = db()
+    row = con.execute(
+        "SELECT valor, actualizado_en FROM cache WHERE clave=?", (clave,)
+    ).fetchone()
+    con.close()
+    if not row:
+        return None, False
+    edad = (datetime.now() - datetime.fromisoformat(row["actualizado_en"])).total_seconds()
+    fresco = edad <= ttl_seg
+    try:
+        return json.loads(row["valor"]), fresco
+    except (json.JSONDecodeError, TypeError):
+        return None, False
+
+def cache_set(clave, valor):
+    con = db()
+    con.execute("""
+        INSERT INTO cache(clave, valor, actualizado_en) VALUES(?,?,?)
+        ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor, actualizado_en=excluded.actualizado_en
+    """, (clave, json.dumps(valor, ensure_ascii=False), datetime.now().isoformat(timespec="seconds")))
+    con.commit()
+    con.close()
+
+def con_cache(clave, ttl_seg, forzar, fetch_fn):
+    """
+    Usa cache fresco si existe. Si está vencido o no existe (o se fuerza refresh),
+    intenta traer datos en vivo. Si la fuente en vivo falla, devuelve el cache
+    aunque esté viejo (mejor dato viejo que error), indicando el origen.
+    """
+    cacheado, fresco = cache_get(clave, ttl_seg)
+    if cacheado is not None and fresco and not forzar:
+        return cacheado, "cache"
+    try:
+        dato_vivo = fetch_fn()
+        cache_set(clave, dato_vivo)
+        return dato_vivo, "vivo"
+    except Exception:
+        if cacheado is not None:
+            return cacheado, "cache_vencido"
+        raise
 
 def extract_races_from_meeting(soup):
     races = []
@@ -80,101 +121,154 @@ def extract_races_from_meeting(soup):
             races.append({"numero": int(m.group(1)), "titulo": clean(h.get_text(" "))})
     return races
 
-def parse_official_result(nodes):
-    """Extrae el resultado oficial de la tabla RESULTADOS de Stud Book."""
-    tables, seen = [], set()
-    for node in nodes:
-        if getattr(node, "name", None) != "table":
-            continue
-        marker = id(node)
-        if marker in seen:
-            continue
-        seen.add(marker)
-        tables.append(node)
+def _cell_text(cell):
+    return clean(cell.get_text(" ", strip=True))
 
-    for table in tables:
-        header_row = table.find("tr")
-        if not header_row:
+
+def _map_headers(header_cells):
+    """
+    Mapea los encabezados de la tabla a indices de columna.
+    La tabla del Stud Book usa: P | O | Ejemplar | S | P | E | Kg | Jockey | Kg |
+    Entrenador | Caballeriza | Cpos | Acum. | Pago
+    Hay DOS columnas 'Kg': la anterior al jockey es el peso corporal del animal,
+    la posterior es el peso que lleva encima (la que importa para el analisis).
+    """
+    idx = {}
+    kg_positions = []
+    for i, cell in enumerate(header_cells):
+        h = _cell_text(cell).lower().rstrip(".")
+        if h == "ejemplar" and "nombre" not in idx:
+            idx["nombre"] = i
+        elif h == "jockey" and "jockey" not in idx:
+            idx["jockey"] = i
+        elif h == "entrenador" and "entrenador" not in idx:
+            idx["entrenador"] = i
+        elif h == "caballeriza" and "caballeriza" not in idx:
+            idx["caballeriza"] = i
+        elif h == "o" and "numero" not in idx:
+            idx["numero"] = i
+        elif h == "p" and "puesto" not in idx:
+            idx["puesto"] = i          # el primer 'P' es el puesto final
+        elif h == "e" and "edad" not in idx:
+            idx["edad"] = i
+        elif h == "s" and "sexo" not in idx:
+            idx["sexo"] = i
+        elif h == "kg":
+            kg_positions.append(i)
+        elif h in ("cpos", "cuerpos"):
+            idx["cuerpos"] = i
+        elif h == "pago":
+            idx["pago"] = i
+
+    # Resolver cual de los dos 'Kg' es el peso que lleva encima.
+    jockey_i = idx.get("jockey")
+    if kg_positions:
+        if jockey_i is not None:
+            despues = [k for k in kg_positions if k > jockey_i]
+            antes = [k for k in kg_positions if k < jockey_i]
+            if despues:
+                idx["peso"] = despues[0]
+            if antes:
+                idx["peso_corporal"] = antes[-1]
+        if "peso" not in idx:
+            idx["peso"] = kg_positions[-1]
+    return idx
+
+
+def _find_header_row(table):
+    """Devuelve las celdas del encabezado, sea <th> o la primera fila."""
+    for tr in table.find_all("tr"):
+        ths = tr.find_all("th")
+        if ths:
+            return ths
+    first = table.find("tr")
+    return first.find_all(["th", "td"]) if first else []
+
+
+def _parse_participants_table(table):
+    """Lee una tabla de participantes y devuelve la lista de caballos."""
+    header_cells = _find_header_row(table)
+    if not header_cells:
+        return []
+    idx = _map_headers(header_cells)
+    if "nombre" not in idx:
+        return []
+
+    participants = []
+    header_texts = {_cell_text(c).lower() for c in header_cells}
+
+    for tr in table.find_all("tr"):
+        cells = tr.find_all("td")
+        if not cells or len(cells) <= idx["nombre"]:
+            continue
+        # saltear la fila de encabezado si vino como td
+        if {_cell_text(c).lower() for c in cells} & header_texts == {
+            _cell_text(c).lower() for c in cells
+        }:
             continue
 
-        headers = [
-            clean(cell.get_text(" ")).lower()
-            for cell in header_row.find_all(["th", "td"])
+        name_cell = cells[idx["nombre"]]
+        link = name_cell.find("a", href=True)
+        name = clean(link.get_text(" ")) if link else _cell_text(name_cell)
+        if not name:
+            continue
+
+        def col(key):
+            i = idx.get(key)
+            if i is None or i >= len(cells):
+                return ""
+            return _cell_text(cells[i])
+
+        peso = col("peso").replace(",", ".")
+        peso = peso if re.fullmatch(r"\d{2}(\.\d)?", peso or "") else ""
+
+        numero_raw = col("numero")
+        numero = int(numero_raw) if numero_raw.isdigit() else None
+
+        puesto_raw = col("puesto")
+        puesto = int(puesto_raw) if puesto_raw.isdigit() else None
+
+        detalle_partes = [
+            f"Jockey: {col('jockey')}" if col("jockey") else "",
+            f"Entrenador: {col('entrenador')}" if col("entrenador") else "",
+            f"Caballeriza: {col('caballeriza')}" if col("caballeriza") else "",
+            f"Edad: {col('edad')}" if col("edad") else "",
+            f"Sexo: {col('sexo')}" if col("sexo") else "",
         ]
-        if not headers or not any("ejemplar" in h for h in headers):
-            continue
 
-        def find_index(options, contains=False):
-            for index, header in enumerate(headers):
-                for option in options:
-                    if (contains and option in header) or header == option:
-                        return index
-            return None
+        participants.append({
+            "numero": numero,
+            "nombre": name,
+            "perfil": urljoin(BASE, link["href"]) if link else "",
+            "jockey": col("jockey"),
+            "entrenador": col("entrenador"),
+            "caballeriza": col("caballeriza"),
+            "edad": col("edad"),
+            "sexo_tabla": col("sexo"),
+            "peso": peso,
+            "peso_corporal": col("peso_corporal"),
+            "puesto": puesto,
+            "detalle": " · ".join(p for p in detalle_partes if p)[:700],
+            "retirado": False,
+        })
 
-        position_index = find_index(
-            ["p", "pos", "puesto", "posición", "posicion"]
-        )
-        order_index = find_index(
-            ["o", "orden", "n", "nº", "n°", "numero", "número"]
-        )
-        horse_index = find_index(["ejemplar"], contains=True)
-
-        if position_index is None or horse_index is None:
-            continue
-
-        result = []
-        for row in table.find_all("tr")[1:]:
-            cells = row.find_all(["th", "td"])
-            if len(cells) <= max(position_index, horse_index):
-                continue
-
-            position_text = clean(
-                cells[position_index].get_text(" ")
-            )
-            position_match = re.search(r"\d+", position_text)
-            if not position_match:
-                continue
-
-            horse_name = clean(cells[horse_index].get_text(" "))
-            horse_name = re.sub(r"^Image\s+", "", horse_name, flags=re.I)
-            if not horse_name:
-                continue
-
-            order = None
-            if order_index is not None and len(cells) > order_index:
-                order_match = re.search(
-                    r"\d+",
-                    clean(cells[order_index].get_text(" ")),
-                )
-                if order_match:
-                    order = int(order_match.group())
-
-            result.append({
-                "posicion": int(position_match.group()),
-                "numero": order,
-                "nombre": horse_name,
-            })
-
-        if result:
-            result.sort(key=lambda item: item["posicion"])
-            return result
-
-    return []
+    return participants
 
 
 def parse_race(soup, numero):
     heading = None
     pat = re.compile(rf"^{numero}\s*[º°ª]?\s*Carrera\b", re.I)
-    for h in soup.find_all(["h2","h3"]):
+    for h in soup.find_all(["h1", "h2", "h3", "h4"]):
         if pat.search(clean(h.get_text(" "))):
             heading = h
             break
     if not heading:
         return None
 
+    # Recolectar todo lo que va desde este encabezado hasta el de la carrera siguiente.
     nodes = []
     for node in heading.find_all_next():
-        if node is not heading and node.name in ["h2","h3"] and re.search(
+        if node is not heading and node.name in ["h1", "h2", "h3", "h4"] and re.search(
             r"\d+\s*[º°ª]?\s*Carrera\b", clean(node.get_text(" ")), re.I
         ):
             break
@@ -188,26 +282,37 @@ def parse_race(soup, numero):
         m = re.search(pattern, block, re.I)
         return clean(m.group(1)) if m else ""
 
-    participants, seen = [], set()
-    for a in nodes:
-        if getattr(a, "name", None) != "a":
+    # Buscar la tabla de participantes: la primera que tenga columna 'Ejemplar'
+    # y filas con enlaces a /ejemplares/.
+    # Se recorre en orden: todo lo que aparezca DESPUES de un titulo
+    # 'RETIRADOS' corresponde a caballos que no corren.
+    participants = []
+    tablas_vistas = set()
+    en_retirados = False
+    for node in nodes:
+        texto_nodo = clean(node.get_text(" ")) if hasattr(node, "get_text") else ""
+        if getattr(node, "name", None) != "table":
+            # Un titulo/celda corto que diga RETIRADOS marca el corte.
+            if re.fullmatch(r"RETIRADOS?", texto_nodo, re.I):
+                en_retirados = True
             continue
-        href = a.get("href", "")
-        name = clean(a.get_text(" "))
-        if "/ejemplares/" not in href or not name or name in seen:
+        if id(node) in tablas_vistas:
             continue
-        seen.add(name)
-        context = clean(a.parent.get_text(" ", strip=True)) if a.parent else name
-        n = re.search(r"(?:^|\s)(\d{1,2})\s+" + re.escape(name), context, re.I)
-        kg = re.findall(r"\b(\d{2}(?:[.,]\d)?)\b", context)
-        participants.append({
-            "numero": int(n.group(1)) if n else None,
-            "nombre": name,
-            "perfil": urljoin(BASE, href),
-            "detalle": context[:700],
-            "peso": kg[-1].replace(",", ".") if kg else "",
-            "retirado": False
-        })
+        tablas_vistas.add(id(node))
+        filas = _parse_participants_table(node)
+        for fila in filas:
+            fila["retirado"] = en_retirados
+        if filas:
+            participants.extend(filas)
+
+    # Deduplicar por nombre conservando el orden de aparicion.
+    vistos, unicos = set(), []
+    for p in participants:
+        if p["nombre"] in vistos:
+            continue
+        vistos.add(p["nombre"])
+        unicos.append(p)
+    participants = unicos
 
     return {
         "carrera": numero,
@@ -217,9 +322,180 @@ def parse_race(soup, numero):
         "superficie": get(r"Pista:\s*(.+?)\s*\|\s*Estado:"),
         "estado": get(r"Estado:\s*(.+?)\s*\|\s*Categoria:"),
         "categoria": get(r"Categoria:\s*(.+?)(?:Premios|PROGRAMA|RESULTADOS|$)"),
-        "participantes": participants,
-        "resultado_oficial": parse_official_result(nodes),
+        "participantes": participants
     }
+
+
+def _tabla_carreras_del_perfil(soup):
+    """
+    Busca la tabla CARRERAS de la ficha del ejemplar y la lee por columnas:
+    Fecha | video | Hip. | Nº | O | Dist. | Tiempo | Premio | Cat. | Cond. |
+    P | E | Kg | Jockey | Caballeriza
+    Devuelve una lista de carreras corridas, cada una con su video si lo tiene.
+    """
+    mejor = []
+    for table in soup.find_all("table"):
+        encabezados = [
+            clean(th.get_text(" ")).lower().rstrip(".")
+            for th in (table.find_all("th") or [])
+        ]
+        # La tabla de campaña se reconoce por tener Dist. y Jockey.
+        if not any("dist" in h for h in encabezados):
+            continue
+        if not any("jockey" in h for h in encabezados):
+            continue
+
+        idx = {}
+        for i, h in enumerate(encabezados):
+            if "hip" in h and "hipodromo" not in idx: idx["hipodromo"] = i
+            elif h in ("n°", "n", "nº") and "puesto" not in idx: idx["puesto"] = i
+            elif h == "o" and "numero" not in idx: idx["numero"] = i
+            elif "dist" in h and "distancia" not in idx: idx["distancia"] = i
+            elif "tiempo" in h and "tiempo" not in idx: idx["tiempo"] = i
+            elif "premio" in h and "premio" not in idx: idx["premio"] = i
+            elif h == "cat" and "categoria" not in idx: idx["categoria"] = i
+            elif h == "cond" and "condicion" not in idx: idx["condicion"] = i
+            elif h == "p" and "pista" not in idx: idx["pista"] = i
+            elif h == "e" and "estado" not in idx: idx["estado"] = i
+            elif h == "kg" and "kilos" not in idx: idx["kilos"] = i
+            elif "jockey" in h and "jockey" not in idx: idx["jockey"] = i
+            elif "caballeriza" in h and "caballeriza" not in idx: idx["caballeriza"] = i
+
+        filas = []
+        for tr in table.find_all("tr"):
+            celdas = tr.find_all("td")
+            if not celdas:
+                continue
+            texto_fila = clean(tr.get_text(" "))
+            m_fecha = re.search(r"(\d{2}/\d{2}/\d{4})", texto_fila)
+            if not m_fecha:
+                continue
+
+            def col(clave):
+                i = idx.get(clave)
+                if i is None or i >= len(celdas):
+                    return ""
+                return clean(celdas[i].get_text(" "))
+
+            # El video es un enlace a youtube dentro de la fila.
+            video = ""
+            for a in tr.find_all("a", href=True):
+                m_yt = re.search(r"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]+)", a["href"])
+                if m_yt:
+                    video = m_yt.group(1)
+                    break
+
+            enlace_carrera = ""
+            for a in tr.find_all("a", href=True):
+                if "/reuniones/carrera/" in a["href"]:
+                    enlace_carrera = urljoin(BASE, a["href"])
+                    break
+
+            puesto_txt = col("puesto")
+            filas.append({
+                "fecha": m_fecha.group(1),
+                "hipodromo": col("hipodromo"),
+                "puesto": int(puesto_txt) if puesto_txt.isdigit() else None,
+                "numero": col("numero"),
+                "distancia": col("distancia"),
+                "tiempo": col("tiempo"),
+                "premio": col("premio"),
+                "categoria": col("categoria"),
+                "condicion": col("condicion"),
+                "pista": col("pista"),
+                "estado": col("estado"),
+                "kilos": col("kilos"),
+                "jockey": col("jockey"),
+                "caballeriza": col("caballeriza"),
+                "video": video,
+                "enlace": enlace_carrera,
+            })
+
+        if len(filas) > len(mejor):
+            mejor = filas
+    return mejor
+
+
+def _resumen_del_perfil(soup, texto):
+    """Saca un resumen corto y legible, sin el bloque gigante de porcentajes."""
+    resumen = {}
+
+    m = re.search(r"\b(Macho|Hembra)\b", texto, re.I)
+    resumen["sexo"] = m.group(1) if m else ""
+
+    m = re.search(r"(\d{2}/\d{2}/\d{4})\s*\((\d+)\s*años?\)", texto)
+    if m:
+        resumen["nacimiento"] = m.group(1)
+        resumen["edad"] = m.group(2)
+
+    # Padre y madre: aparecen como "por PADRE y MADRE"
+    m = re.search(r"\bpor\s+(.+?)\s+y\s+(.+?)\s+por\b", texto)
+    if m:
+        resumen["padre"] = clean(m.group(1))[:60]
+        resumen["madre"] = clean(m.group(2))[:60]
+
+    # Frase resumen que el propio sitio arma, ej:
+    # "Ganadora de 4 carreras en Palermo - $31.320.000, a los 4 y 5 años."
+    # Se corta en el punto final real, no en los puntos de miles.
+    m = re.search(
+        r"(Ganador[a]?\s+de\s+\d+\s+carreras?.{0,160}?\.)(?:\s|$)",
+        texto, re.I
+    )
+    if m:
+        frase = clean(m.group(1))
+        # Si se cortó dentro de un número (ej "$31."), estirar hasta el punto siguiente.
+        if re.search(r"\$[\d.]*\.$", frase):
+            m2 = re.search(
+                r"(Ganador[a]?\s+de\s+\d+\s+carreras?.{0,200}?años?\.)",
+                texto, re.I
+            )
+            if m2:
+                frase = clean(m2.group(1))
+        resumen["logro"] = frase
+
+    m = re.search(r"CARRERAS\s*\((\d+)\)", texto, re.I)
+    if m:
+        resumen["total_carreras"] = m.group(1)
+
+    return resumen
+
+
+TTL_DETALLE_CARRERA = 30 * 24 * 60 * 60   # 30 dias: una carrera corrida ya no cambia
+
+
+def detalle_de_carrera(url_carrera):
+    """
+    Entra a la pagina de una carrera y saca, en palabras, la condicion
+    y el estado de la pista. Se guarda en cache porque una carrera ya
+    corrida no cambia nunca.
+    """
+    if not url_carrera:
+        return {}
+
+    clave = f"detalle_carrera:{url_carrera}"
+    cacheado, fresco = cache_get(clave, TTL_DETALLE_CARRERA)
+    if cacheado is not None and fresco:
+        return cacheado
+
+    try:
+        soup = fetch(url_carrera)
+        texto = clean(soup.get_text(" "))
+
+        def sacar(patron):
+            m = re.search(patron, texto, re.I)
+            return clean(m.group(1)) if m else ""
+
+        detalle = {
+            "condicion_txt": sacar(r"Condición:\s*(.+?)\s*Pista:"),
+            "pista_txt": sacar(r"Pista:\s*(.+?)\s*\|\s*Estado:"),
+            "estado_txt": sacar(r"Estado:\s*(.+?)\s*\|\s*Categoria"),
+            "categoria_txt": sacar(r"Categoria:\s*([A-Za-zÁÉÍÓÚáéíóúñÑ ]+)"),
+        }
+        cache_set(clave, detalle)
+        return detalle
+    except Exception:
+        return cacheado or {}
+
 
 def enrich_horse(horse):
     profile = horse.get("perfil", "")
@@ -227,347 +503,140 @@ def enrich_horse(horse):
         return horse
     try:
         soup = fetch(profile)
-        text = clean(soup.get_text(" "))
-        horse["sexo"] = (re.search(r"\b(Macho|Hembra)\b", text, re.I) or [None, ""])[1]
-        horse["campana"] = clean((re.search(r"#?\s*CAMPAÑA\s*(.+?)(?:POR HIPODROMO|PEDIGREE|$)", text, re.I) or [None, ""])[1])[:1000]
-        horse["actuaciones"] = []
-        for tr in soup.find_all("tr"):
-            row = clean(tr.get_text(" "))
-            if re.search(r"\d{2}/\d{2}/\d{4}", row):
-                horse["actuaciones"].append(row[:500])
-        horse["actuaciones"] = horse["actuaciones"][:12]
+        texto = clean(soup.get_text(" "))
+
+        resumen = _resumen_del_perfil(soup, texto)
+        horse.update({k: v for k, v in resumen.items() if v})
+        horse.setdefault("sexo", "")
+
+        carreras = _tabla_carreras_del_perfil(soup)
+        horse["carreras"] = carreras[:20]
+
+        # Contadores para el pronostico y para mostrar.
+        puestos = [c["puesto"] for c in carreras if c["puesto"]]
+        horse["victorias"] = sum(1 for p in puestos if p == 1)
+        horse["podios"] = sum(1 for p in puestos if p <= 3)
+        horse["corridas"] = len(carreras)
+
+        # Compatibilidad con el resto del codigo que espera 'actuaciones'.
+        horse["actuaciones"] = [
+            f"{c['fecha']} {c['hipodromo']} {c['puesto']}º {c['distancia']}m"
+            for c in carreras if c["puesto"]
+        ][:20]
+        horse["campana"] = resumen.get("logro", "")
     except Exception:
         horse.setdefault("sexo", "")
         horse.setdefault("campana", "")
         horse.setdefault("actuaciones", [])
+        horse.setdefault("carreras", [])
     return horse
 
-def score_horse(h, context):
+# ============================================================
+# APRENDIZAJE: los valores del algoritmo dejan de ser fijos.
+# Se guardan en la base y se ajustan comparando pronostico vs resultado.
+# ============================================================
+
+PESOS_INICIALES = {
+    "campana_disponible": 1.2,
+    "registra_victorias": 8.0,
+    "hipodromos_principales": 4.0,
+    "peso_liviano": 5.0,
+    "peso_pesado": -3.0,
+    "victoria_reciente": 4.0,
+    "podio_reciente": 2.0,
+    "pista_compatible": 7.0,
+}
+
+def cargar_pesos():
+    """Lee los pesos del algoritmo. Si no existen todavia, usa los iniciales."""
+    try:
+        con = db()
+        filas = con.execute("SELECT clave, valor FROM algoritmo").fetchall()
+        con.close()
+        guardados = {f["clave"]: f["valor"] for f in filas}
+    except Exception:
+        guardados = {}
+    pesos = dict(PESOS_INICIALES)
+    pesos.update({k: v for k, v in guardados.items() if k in PESOS_INICIALES})
+    return pesos
+
+def guardar_pesos(pesos):
+    con = db()
+    ahora = datetime.now().isoformat(timespec="seconds")
+    for clave, valor in pesos.items():
+        con.execute("""
+            INSERT INTO algoritmo(clave, valor, actualizado_en) VALUES(?,?,?)
+            ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor,
+                                            actualizado_en=excluded.actualizado_en
+        """, (clave, float(valor), ahora))
+    con.commit()
+    con.close()
+
+
+def score_horse(h, context, pesos=None):
     # Puntaje transparente. Solo usa datos detectados o cargados.
+    P = pesos if pesos is not None else cargar_pesos()
     score, reasons = 50.0, []
     acts = h.get("actuaciones", [])
     campaign = h.get("campana", "").lower()
     detail = h.get("detalle", "").lower()
 
     if acts:
-        score += min(14, len(acts) * 1.2)
+        score += min(14, len(acts) * P["campana_disponible"])
         reasons.append("tiene campaña reciente disponible")
     if "ganador" in campaign or "ganadora" in campaign:
-        score += 8; reasons.append("registra victorias")
+        score += P["registra_victorias"]; reasons.append("registra victorias")
     if "debut" in campaign or not acts:
         score += 1
         reasons.append("debutante o historial limitado: se mantiene sin penalización fuerte")
     if any(x in campaign for x in ["palermo","san isidro","la plata"]):
-        score += 4; reasons.append("experiencia en hipódromos principales")
-    if h.get("peso"):
-        try:
-            kg = float(h["peso"])
-            if kg <= 56: score += 3; reasons.append("peso competitivo")
-        except: pass
+        score += P["hipodromos_principales"]
+        reasons.append("experiencia en hipódromos principales")
+    # Peso relativo al resto de la carrera (no un umbral fijo).
+    peso_propio = _to_float(h.get("peso"))
+    pesos_carrera = [
+        _to_float(x.get("peso"))
+        for x in context.get("participantes", [])
+        if _to_float(x.get("peso")) is not None
+    ]
+    if peso_propio is not None and len(pesos_carrera) >= 2:
+        promedio = sum(pesos_carrera) / len(pesos_carrera)
+        diferencia = promedio - peso_propio
+        if diferencia >= 1.5:
+            score += P["peso_liviano"]
+            reasons.append(f"lleva {diferencia:.1f} kg menos que el promedio de la carrera")
+        elif diferencia <= -1.5:
+            score += P["peso_pesado"]
+            reasons.append(f"lleva {abs(diferencia):.1f} kg más que el promedio de la carrera")
+
+    # Victorias y podios: si vienen contados de la ficha se usan directo;
+    # si no, se intentan leer del texto de las actuaciones.
+    if h.get("corridas") is not None:
+        victorias = h.get("victorias", 0)
+        podios = h.get("podios", 0)
+    else:
+        victorias = len(re.findall(r"\b1\s*[º°]", " ".join(acts)))
+        podios = len(re.findall(r"\b[123]\s*[º°]", " ".join(acts)))
+    if victorias:
+        score += min(10, victorias * P["victoria_reciente"])
+        reasons.append(f"{victorias} victoria(s) en su campaña")
+    if podios > victorias:
+        score += min(6, (podios - victorias) * P["podio_reciente"])
+        reasons.append(f"{podios} llegada(s) entre los tres primeros")
+
     if context.get("pista_dia") in ["Pesada","Barrosa","Húmeda"] and any(
         x in (campaign+" "+detail) for x in ["pesada","barrosa","húmeda","humeda"]
     ):
-        score += 7; reasons.append("antecedente compatible con la pista del día")
+        score += P["pista_compatible"]
+        reasons.append("antecedente compatible con la pista del día")
     return round(max(1, min(99, score)), 1), reasons
 
 
-def build_analysis(participants, context, analysis_type="oficial"):
-    horses = [
-        dict(h)
-        for h in participants
-        if not h.get("retirado")
-    ]
-    if len(horses) < 2:
-        raise ValueError(
-            "Se necesitan al menos dos participantes confirmados."
-        )
-
-    ranked = []
-    for horse in horses:
-        score, reasons = score_horse(horse, context)
-        ranked.append({
-            **horse,
-            "score": score,
-            "motivos": reasons,
-        })
-
-    ranked.sort(
-        key=lambda item: (
-            item["score"],
-            -(item.get("numero") or 999),
-        ),
-        reverse=True,
-    )
-    top = ranked[:4]
-    total = sum(item["score"] for item in top) or 1
-
-    for item in top:
-        item["probabilidad_relativa"] = round(
-            item["score"] / total * 100,
-            1,
-        )
-
-    return {
-        "tipo": analysis_type,
-        "ranking": top,
-        "confianza": round(top[0]["score"], 1),
-        "generado_en": datetime.now().isoformat(timespec="seconds"),
-    }
-
-
-def result_key(item):
-    number = item.get("numero")
-    if number not in (None, ""):
-        try:
-            return ("numero", int(number))
-        except (TypeError, ValueError):
-            pass
-    return ("nombre", normalize_text(item.get("nombre", "")))
-
-
-def compare_analysis_with_result(analysis, official_result):
-    ranking = (analysis or {}).get("ranking", [])
-    predicted = ranking[:4]
-    actual = sorted(
-        official_result or [],
-        key=lambda item: item.get("posicion", 999),
-    )[:4]
-
-    predicted_keys = [result_key(item) for item in predicted]
-    actual_keys = [result_key(item) for item in actual]
-
-    exact = sum(
-        1
-        for index, key in enumerate(predicted_keys)
-        if index < len(actual_keys) and key == actual_keys[index]
-    )
-    top4_hits = len(set(predicted_keys) & set(actual_keys))
-    winner_hit = bool(
-        predicted_keys
-        and actual_keys
-        and predicted_keys[0] == actual_keys[0]
-    )
-
-    return {
-        "acierto_ganador": winner_hit,
-        "aciertos_posicion_exacta": exact,
-        "aciertos_dentro_top4": top4_hits,
-        "pronostico": predicted,
-        "resultado": actual,
-        "comparado_en": datetime.now().isoformat(timespec="seconds"),
-    }
-
-
-def json_load(value, default):
-    if value in (None, ""):
-        return default
+def _to_float(value):
     try:
-        return json.loads(value)
-    except (TypeError, json.JSONDecodeError):
-        return default
-
-
-def official_analysis_exists(fecha, hipodromo, numero):
-    con = db()
-    row = con.execute(
-        """
-        SELECT analisis
-        FROM carreras
-        WHERE fecha=? AND hipodromo=? AND numero=?
-        """,
-        (fecha, hipodromo, int(numero)),
-    ).fetchone()
-    con.close()
-    if not row:
-        return False
-    analysis = json_load(row["analisis"], {})
-    return bool(analysis.get("ranking"))
-
-
-def save_official_race(data, analysis=None, official_result=None):
-    now = datetime.now().isoformat(timespec="seconds")
-    analysis_json = (
-        json.dumps(analysis, ensure_ascii=False)
-        if analysis
-        else ""
-    )
-    result_json = (
-        json.dumps(official_result, ensure_ascii=False)
-        if official_result
-        else ""
-    )
-
-    con = db()
-    con.execute(
-        """
-        INSERT INTO carreras(
-          fecha,hipodromo,numero,premio,distancia,superficie,
-          estado_publicado,condicion,pista_dia,clima,viento,retiros,
-          observaciones,participantes,analisis,resultado_real,
-          creado_en,analisis_generado_en,resultado_actualizado_en,
-          actualizado_en
-        )
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(fecha,hipodromo,numero) DO UPDATE SET
-          premio=CASE WHEN excluded.premio<>'' THEN excluded.premio
-                      ELSE carreras.premio END,
-          distancia=COALESCE(excluded.distancia,carreras.distancia),
-          superficie=CASE WHEN excluded.superficie<>'' THEN excluded.superficie
-                          ELSE carreras.superficie END,
-          estado_publicado=CASE WHEN excluded.estado_publicado<>'' THEN excluded.estado_publicado
-                                ELSE carreras.estado_publicado END,
-          condicion=CASE WHEN excluded.condicion<>'' THEN excluded.condicion
-                         ELSE carreras.condicion END,
-          participantes=CASE WHEN excluded.participantes<>'[]' THEN excluded.participantes
-                             ELSE carreras.participantes END,
-          analisis=CASE
-            WHEN carreras.analisis IS NULL
-              OR trim(carreras.analisis) IN ('','{}','[]','null')
-            THEN excluded.analisis
-            ELSE carreras.analisis
-          END,
-          resultado_real=CASE
-            WHEN excluded.resultado_real<>''
-            THEN excluded.resultado_real
-            ELSE carreras.resultado_real
-          END,
-          analisis_generado_en=CASE
-            WHEN carreras.analisis IS NULL
-              OR trim(carreras.analisis) IN ('','{}','[]','null')
-            THEN excluded.analisis_generado_en
-            ELSE carreras.analisis_generado_en
-          END,
-          resultado_actualizado_en=CASE
-            WHEN excluded.resultado_real<>''
-            THEN excluded.resultado_actualizado_en
-            ELSE carreras.resultado_actualizado_en
-          END,
-          actualizado_en=excluded.actualizado_en
-        """,
-        (
-            data["fecha"],
-            data["hipodromo"],
-            int(data["numero"]),
-            data.get("premio", ""),
-            data.get("distancia") or None,
-            data.get("superficie", ""),
-            data.get("estado_publicado", ""),
-            data.get("condicion", ""),
-            data.get("pista_dia", ""),
-            data.get("clima", ""),
-            data.get("viento", ""),
-            json.dumps(data.get("retiros", []), ensure_ascii=False),
-            data.get("observaciones", ""),
-            json.dumps(
-                data.get("participantes", []),
-                ensure_ascii=False,
-            ),
-            analysis_json,
-            result_json,
-            now,
-            now if analysis else None,
-            now if official_result else None,
-            now,
-        ),
-    )
-    con.commit()
-
-    row = con.execute(
-        """
-        SELECT id,analisis,resultado_real
-        FROM carreras
-        WHERE fecha=? AND hipodromo=? AND numero=?
-        """,
-        (
-            data["fecha"],
-            data["hipodromo"],
-            int(data["numero"]),
-        ),
-    ).fetchone()
-
-    stored_analysis = json_load(row["analisis"], {})
-    stored_result = json_load(row["resultado_real"], [])
-    comparison = None
-    if stored_analysis.get("ranking") and stored_result:
-        comparison = compare_analysis_with_result(
-            stored_analysis,
-            stored_result,
-        )
-        con.execute(
-            """
-            UPDATE carreras
-            SET comparacion=?, actualizado_en=?
-            WHERE id=?
-            """,
-            (
-                json.dumps(comparison, ensure_ascii=False),
-                now,
-                row["id"],
-            ),
-        )
-        con.commit()
-
-    con.close()
-    return comparison
-
-
-def save_user_analysis(data):
-    now = datetime.now().isoformat(timespec="seconds")
-    user_id = clean(
-        data.get("usuario_id")
-        or request.headers.get("X-LEA-Usuario")
-        or DEFAULT_USER
-    )[:80]
-
-    save_official_race(data)
-
-    con = db()
-    race = con.execute(
-        """
-        SELECT id
-        FROM carreras
-        WHERE fecha=? AND hipodromo=? AND numero=?
-        """,
-        (
-            data["fecha"],
-            data["hipodromo"],
-            int(data["numero"]),
-        ),
-    ).fetchone()
-
-    manual_data = {
-        "pista_dia": data.get("pista_dia", ""),
-        "clima": data.get("clima", ""),
-        "viento": data.get("viento", ""),
-        "retiros": data.get("retiros", []),
-        "observaciones": data.get("observaciones", ""),
-        "participantes": data.get("participantes", []),
-    }
-
-    con.execute(
-        """
-        INSERT INTO analisis_usuarios(
-          carrera_id,usuario_id,datos_manuales,analisis,
-          creado_en,actualizado_en
-        )
-        VALUES(?,?,?,?,?,?)
-        ON CONFLICT(carrera_id,usuario_id) DO UPDATE SET
-          datos_manuales=excluded.datos_manuales,
-          analisis=excluded.analisis,
-          actualizado_en=excluded.actualizado_en
-        """,
-        (
-            race["id"],
-            user_id,
-            json.dumps(manual_data, ensure_ascii=False),
-            json.dumps(data.get("analisis", {}), ensure_ascii=False),
-            now,
-            now,
-        ),
-    )
-    con.commit()
-    con.close()
-    return user_id
+        return float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
 
 
 def normalize_text(value):
@@ -625,6 +694,83 @@ def calendar_from_meetings(soup):
     return meetings
 
 
+def _codigo_recaptcha(soup):
+    """
+    El sitio exige un codigo 'recaptcha' en la direccion para cambiar de mes.
+    Ese codigo viene dentro de la propia pagina de reuniones.
+    """
+    # 1) En algun enlace de la propia pagina.
+    for a in soup.find_all("a", href=True):
+        m = re.search(r"[?&]recaptcha=([^&\"']+)", a["href"])
+        if m:
+            return m.group(1)
+    # 2) En un campo oculto del formulario.
+    campo = soup.find("input", attrs={"name": "recaptcha"})
+    if campo and campo.get("value"):
+        return campo["value"]
+    # 3) En el codigo de la pagina.
+    m = re.search(r"recaptcha['\"]?\s*[:=]\s*['\"]([A-Za-z0-9_\-]{40,})", str(soup))
+    if m:
+        return m.group(1)
+    return ""
+
+
+def calendario_del_mes(anio, mes):
+    """
+    Devuelve las reuniones de un mes concreto (anio=2024, mes=3).
+    Guarda en cache: un mes que ya paso no cambia mas.
+    """
+    clave = f"calendario_mes:{anio}-{mes:02d}"
+    hoy = datetime.now()
+    es_pasado = (anio, mes) < (hoy.year, hoy.month)
+    ttl = 90 * 24 * 60 * 60 if es_pasado else TTL_CALENDARIO
+
+    cacheado, fresco = cache_get(clave, ttl)
+    if cacheado is not None and fresco:
+        return cacheado
+
+    try:
+        # Primero la pagina normal, para sacar el codigo que exige el sitio.
+        base_soup = fetch(BASE + "/reuniones")
+        codigo = _codigo_recaptcha(base_soup)
+
+        url = f"{BASE}/reuniones?mes={mes:02d}&anio={anio}"
+        if codigo:
+            url += f"&recaptcha={codigo}"
+
+        soup = fetch(url)
+        reuniones = calendar_from_meetings(soup)
+
+        # Quedarse solo con las del mes pedido: si el sitio ignoro el pedido,
+        # es preferible devolver vacio antes que datos de otro mes.
+        prefijo = f"{anio}-{mes:02d}-"
+        reuniones = [r for r in reuniones if r["fecha"].startswith(prefijo)]
+
+        cache_set(clave, reuniones)
+        return reuniones
+    except Exception:
+        return cacheado or []
+
+
+def calendario_entre(desde, hasta):
+    """Junta las reuniones de todos los meses entre dos fechas (AAAA-MM-DD)."""
+    try:
+        d = datetime.strptime(desde, "%Y-%m-%d")
+        h = datetime.strptime(hasta, "%Y-%m-%d")
+    except ValueError:
+        return []
+
+    todas = []
+    anio, mes = d.year, d.month
+    while (anio, mes) <= (h.year, h.month):
+        todas.extend(calendario_del_mes(anio, mes))
+        mes += 1
+        if mes > 12:
+            mes = 1
+            anio += 1
+    return todas
+
+
 def saved_calendar():
     con = db()
     rows = con.execute(
@@ -647,16 +793,17 @@ def saved_calendar():
 
 @app.get("/api/calendario")
 def calendario():
+    forzar = request.args.get("refresh") == "1"
     try:
-        meetings = calendar_from_meetings(
-            fetch(BASE + "/reuniones")
+        meetings, origen = con_cache(
+            "calendario", TTL_CALENDARIO, forzar,
+            lambda: calendar_from_meetings(fetch(BASE + "/reuniones"))
         )
         if meetings:
-            return jsonify(
-                ok=True,
-                reuniones=meetings,
-                fuente="Stud Book",
-            )
+            resp = {"ok": True, "reuniones": meetings, "fuente": "Stud Book"}
+            if origen == "cache_vencido":
+                resp["aviso"] = "La fuente oficial no respondió. Se muestra el último calendario guardado."
+            return jsonify(**resp)
     except Exception:
         pass
 
@@ -702,10 +849,11 @@ def reuniones():
     except ValueError:
         return jsonify(ok=False, error="Fecha inválida."), 400
 
-    try:
-        calendar = calendar_from_meetings(
-            fetch(BASE + "/reuniones")
-        )
+    forzar = request.args.get("refresh") == "1"
+    clave = f"reuniones:{fecha}:{normalize_text(hipodromo)}"
+
+    def traer():
+        calendar = calendar_from_meetings(fetch(BASE + "/reuniones"))
         selected = [
             meeting
             for meeting in calendar
@@ -713,7 +861,6 @@ def reuniones():
             and normalize_text(meeting["hipodromo"])
             == normalize_text(hipodromo)
         ]
-
         output = []
         for meeting in selected:
             detail = fetch(meeting["url"])
@@ -724,43 +871,303 @@ def reuniones():
                     "url": meeting["url"],
                     "carreras": races,
                 })
-
         if not output:
-            return jsonify(
-                ok=False,
-                error=(
-                    "No se encontraron carreras confirmadas "
-                    "para esa reunión."
-                ),
-                reuniones=[],
-            ), 404
+            raise ValueError("sin carreras")
+        return output
 
-        return jsonify(ok=True, reuniones=output)
-
+    try:
+        output, origen = con_cache(clave, TTL_REUNION, forzar, traer)
+        resp = {"ok": True, "reuniones": output}
+        if origen == "cache_vencido":
+            resp["aviso"] = "La fuente oficial no respondió. Se muestra la última versión guardada."
+        return jsonify(**resp)
     except Exception:
         return jsonify(
             ok=False,
             error=(
-                "La fuente oficial no respondió. "
-                "Probá nuevamente más tarde."
+                "No se encontraron carreras confirmadas para esa reunión, "
+                "o la fuente oficial no respondió."
             ),
             reuniones=[],
-        ), 503
+        ), 404
 
 
 @app.get("/api/carrera")
 def carrera():
     url = request.args.get("url","")
     numero = request.args.get("numero","")
+    forzar = request.args.get("refresh") == "1"
     if not url.startswith(BASE) or not numero.isdigit():
         return jsonify(ok=False,error="Datos inválidos."),400
-    try:
+
+    clave = f"carrera:{url}:{numero}"
+
+    def traer():
         data = parse_race(fetch(url), int(numero))
         if not data:
-            return jsonify(ok=False,error="No se encontró la carrera."),404
-        return jsonify(ok=True, **data)
+            raise ValueError("carrera no encontrada")
+        return data
+
+    try:
+        data, origen = con_cache(clave, TTL_CARRERA, forzar, traer)
+        resp = {"ok": True, **data}
+        if origen == "cache_vencido":
+            resp["aviso"] = "La fuente oficial no respondió. Se muestra la última versión guardada."
+        return jsonify(**resp)
     except Exception as e:
         return jsonify(ok=False,error="No se pudo cargar la carrera.",detalle=str(e)),502
+
+TTL_BUSQUEDA = 6 * 60 * 60   # 6 horas
+
+# Buscador real del Stud Book, verificado en el sitio:
+# /ejemplares/autocomplete?tipo=1&muerto=1&term=NOMBRE
+# Devuelve JSON con: id, text, leyenda, padre, madre, sexo, nacimiento,
+# pelo, url_friendly.
+RUTA_AUTOCOMPLETE = "/ejemplares/autocomplete?tipo=1&muerto=1&term={q}"
+
+
+def _consultar_autocomplete(termino, tipo="1", muerto="1"):
+    """
+    Consulta cruda al autocompletado del Stud Book.
+    Comprobado en el sitio: solo responde con UNA palabra (sin espacios) y
+    devuelve como maximo 15 resultados, en orden alfabetico.
+    El parametro 'tipo' filtra por categoria de ejemplar: con tipo=1 no
+    aparecen todos, por eso se prueban varias variantes.
+    """
+    cabeceras = dict(HEADERS)
+    cabeceras["Accept"] = "application/json, text/javascript, */*; q=0.01"
+    cabeceras["X-Requested-With"] = "XMLHttpRequest"
+    url = (f"{BASE}/ejemplares/autocomplete"
+           f"?tipo={tipo}&muerto={muerto}&term={quote(termino)}")
+    try:
+        r = requests.get(url, headers=cabeceras, timeout=(4, 10))
+        r.raise_for_status()
+        datos = r.json()
+    except Exception:
+        return []
+    if isinstance(datos, dict):
+        datos = datos.get("results") or datos.get("data") or []
+    return datos if isinstance(datos, list) else []
+
+
+# Variantes de categoria a probar. La primera es la que usa el sitio; las
+# demas existen porque se comprobo que con tipo=1 faltan ejemplares
+# (por ejemplo CANDY GIRL, que tiene ficha propia pero no aparecia).
+VARIANTES_TIPO = ["1", "2", "0", "", "3"]
+
+
+def _armar_resultado(item):
+    nombre = clean(item.get("text", ""))
+    idd = item.get("id")
+    if not nombre or idd is None or idd == "":
+        return None
+    slug = item.get("url_friendly") or normalize_text(nombre).replace(" ", "-")
+    partes = []
+    if item.get("leyenda"):
+        partes.append(clean(str(item["leyenda"])))
+    padres = " y ".join(
+        clean(str(item[k])) for k in ("padre", "madre") if item.get(k)
+    )
+    if padres:
+        partes.append("por " + padres)
+    return {
+        "nombre": nombre,
+        "perfil": f"{BASE}/ejemplares/perfil/{idd}/{slug}",
+        "detalle": " ".join(partes),
+        "sexo": clean(str(item.get("sexo", ""))),
+        "nacimiento": clean(str(item.get("nacimiento", ""))),
+        "pelo": clean(str(item.get("pelo", ""))),
+    }
+
+
+def buscar_ejemplares(termino):
+    """
+    Busca caballos por nombre. Sortea las dos limitaciones del buscador del
+    Stud Book, comprobadas en el sitio:
+      1) con espacios devuelve vacio -> se consulta solo la primera palabra
+      2) devuelve como maximo 15, en orden alfabetico -> si el buscado no
+         entra en esa tanda, se agregan letras hasta alcanzarlo
+    """
+    termino = clean(termino)
+    if len(termino) < 3:
+        return []
+
+    clave = f"busqueda4:{normalize_text(termino)}"
+    cacheado, fresco = cache_get(clave, TTL_BUSQUEDA)
+    if cacheado is not None and fresco:
+        return cacheado
+
+    objetivo = normalize_text(termino)
+    objetivo_pegado = objetivo.replace(" ", "")
+    palabras = termino.split()
+
+    vistos, encontrados = set(), []
+    consultas = 0
+    MAX_CONSULTAS = 10
+
+    def agregar(lista):
+        for item in lista:
+            if not isinstance(item, dict):
+                continue
+            r = _armar_resultado(item)
+            if not r or r["perfil"] in vistos:
+                continue
+            vistos.add(r["perfil"])
+            encontrados.append(r)
+
+    def ya_esta():
+        return any(
+            normalize_text(e["nombre"]).replace(" ", "") == objetivo_pegado
+            for e in encontrados
+        )
+
+    def consultar(q, tipo="1", muerto="1"):
+        nonlocal consultas
+        if consultas >= MAX_CONSULTAS or not q:
+            return
+        consultas += 1
+        agregar(_consultar_autocomplete(q, tipo, muerto))
+
+    # 1) El termino TAL COMO SE ESCRIBIO, con espacios y todo.
+    #    Comprobado con el diagnostico: el sitio si acepta espacios.
+    consultar(termino)
+
+    # 2) Si no aparecio, probar las otras categorias de ejemplar.
+    if not ya_esta():
+        for tipo in VARIANTES_TIPO[1:]:
+            if ya_esta():
+                break
+            consultar(termino, tipo)
+
+    # 3) Todavia no: probar sin el filtro de fallecidos.
+    if not ya_esta():
+        consultar(termino, "1", "0")
+
+    # 4) Ultimo recurso: el nombre pegado, por si el sitio lo indexa asi.
+    if not ya_esta() and len(palabras) > 1:
+        consultar(termino.replace(" ", ""))
+
+    # 5) Si aun asi no hay NADA, mostrar al menos los parecidos de la
+    #    primera palabra, para que el usuario elija.
+    if not encontrados:
+        consultar(palabras[0])
+
+    # 6) Quedarse con los que contengan TODAS las palabras buscadas.
+    piezas = [normalize_text(p) for p in palabras if p]
+    filtrados = [
+        e for e in encontrados
+        if all(p in normalize_text(e["nombre"]) for p in piezas)
+    ]
+    # El nombre exacto va primero, despues los que empiezan igual.
+    def orden(e):
+        n = normalize_text(e["nombre"]).replace(" ", "")
+        if n == objetivo_pegado:
+            return (0, e["nombre"])
+        if n.startswith(objetivo_pegado):
+            return (1, e["nombre"])
+        return (2, e["nombre"])
+
+    filtrados.sort(key=orden)
+    resultado = filtrados[:25] if filtrados else sorted(encontrados, key=orden)[:25]
+    cache_set(clave, resultado)
+    return resultado
+
+
+@app.get("/api/buscar-caballo")
+def api_buscar_caballo():
+    termino = request.args.get("q", "").strip()
+    if len(termino) < 3:
+        return jsonify(ok=False, error="Escribí al menos 3 letras."), 400
+    try:
+        resultados = buscar_ejemplares(termino)
+    except Exception:
+        return jsonify(ok=False, error="No se pudo buscar en este momento."), 502
+    if not resultados:
+        return jsonify(
+            ok=False,
+            error=f"No se encontró ningún caballo con «{termino}».",
+            resultados=[],
+        ), 404
+    return jsonify(ok=True, resultados=resultados)
+
+
+@app.get("/api/caballo")
+def api_caballo():
+    """Ficha completa de un caballo: datos, próximas carreras y campaña."""
+    perfil = request.args.get("perfil", "")
+    if not (perfil.startswith(BASE) or perfil.startswith("https://studbook.org.ar")):
+        return jsonify(ok=False, error="Dirección inválida."), 400
+
+    clave = f"caballo:{perfil}"
+    cacheado, fresco = cache_get(clave, TTL_CARRERA)
+    if cacheado is not None and fresco:
+        return jsonify(ok=True, **cacheado)
+
+    try:
+        soup = fetch(perfil)
+        texto = clean(soup.get_text(" "))
+
+        nombre = ""
+        for etiqueta in ["h1", "h2"]:
+            h = soup.find(etiqueta)
+            if h and clean(h.get_text(" ")):
+                nombre = clean(h.get_text(" "))
+                break
+
+        caballo = {"nombre": nombre, "perfil": perfil}
+        caballo.update(_resumen_del_perfil(soup, texto))
+
+        carreras = _tabla_carreras_del_perfil(soup)
+        caballo["carreras"] = carreras[:30]
+        puestos = [c["puesto"] for c in carreras if c["puesto"]]
+        caballo["corridas"] = len(carreras)
+        caballo["victorias"] = sum(1 for p in puestos if p == 1)
+        caballo["podios"] = sum(1 for p in puestos if p <= 3)
+
+        # Proximas carreras: buscarlas solo dentro de esa seccion del documento,
+        # no en toda la pagina (sino se cuelan las carreras ya corridas).
+        proximas = []
+        titulo_prox = None
+        for etiqueta in soup.find_all(["h1", "h2", "h3", "h4", "div", "span", "p"]):
+            if re.fullmatch(r"PR[ÓO]XIMAS CARRERAS", clean(etiqueta.get_text(" ")), re.I):
+                titulo_prox = etiqueta
+                break
+
+        if titulo_prox:
+            for nodo in titulo_prox.find_all_next():
+                texto_nodo = clean(nodo.get_text(" ")) if hasattr(nodo, "get_text") else ""
+                # Cortar al llegar a la seccion siguiente.
+                if re.fullmatch(r"(CAMPA[ÑN]A|EXPORTACI[ÓO]N.*|SERVICIOS|PEDIGREE)",
+                                texto_nodo, re.I):
+                    break
+                if getattr(nodo, "name", None) == "a" and nodo.get("href"):
+                    t = clean(nodo.get_text(" "))
+                    if re.search(r"\d{2}/\d{2}/\d{4}", t):
+                        proximas.append({
+                            "texto": t,
+                            "enlace": urljoin(BASE, nodo["href"]),
+                        })
+
+        caballo["proximas"] = proximas[:5]
+        caballo["sin_proximas"] = len(proximas) == 0
+
+        cache_set(clave, caballo)
+        return jsonify(ok=True, **caballo)
+    except Exception as e:
+        return jsonify(ok=False, error="No se pudo cargar el caballo.", detalle=str(e)), 502
+
+
+@app.get("/api/detalle-carrera")
+def api_detalle_carrera():
+    """Devuelve pista, estado y condicion en palabras de una carrera puntual."""
+    url = request.args.get("url", "")
+    if not url.startswith(BASE) and not url.startswith("https://studbook.org.ar"):
+        return jsonify(ok=False, error="Dirección inválida."), 400
+    detalle = detalle_de_carrera(url)
+    if not detalle:
+        return jsonify(ok=False, error="No se pudo leer el detalle."), 502
+    return jsonify(ok=True, **detalle)
+
 
 @app.post("/api/enriquecer")
 def enriquecer():
@@ -771,16 +1178,417 @@ def enriquecer():
 @app.post("/api/analizar")
 def analizar():
     data = request.get_json(silent=True) or {}
-    try:
-        analysis = build_analysis(
-            data.get("participantes", []),
-            data,
-            analysis_type="usuario",
-        )
-    except ValueError as error:
-        return jsonify(ok=False, error=str(error)), 400
+    horses = [h for h in data.get("participantes",[]) if not h.get("retirado")]
+    if len(horses) < 2:
+        return jsonify(ok=False,error="Se necesitan al menos dos participantes confirmados."),400
+    pesos = cargar_pesos()
+    ranked = []
+    for h in horses:
+        score, reasons = score_horse(h, data, pesos)
+        ranked.append({**h,"score":score,"motivos":reasons})
+    ranked.sort(key=lambda x:x["score"], reverse=True)
+    top = ranked[:4]
+    total = sum(x["score"] for x in top) or 1
+    for x in top:
+        x["probabilidad_relativa"] = round(x["score"]/total*100,1)
 
-    return jsonify(ok=True, **analysis)
+    # Guardar el pronostico y, si la carrera ya se corrio, comparar en el acto.
+    ya_corrida = any(h.get("puesto") for h in horses)
+    try:
+        registrar_pronostico(
+            url=data.get("url",""),
+            numero=data.get("numero"),
+            fecha=data.get("fecha",""),
+            hipodromo=data.get("hipodromo",""),
+            top=top,
+            participantes=horses,
+            pesos=pesos,
+            ya_corrida=ya_corrida,
+        )
+    except Exception:
+        pass  # que un fallo al guardar nunca rompa el pronostico al usuario
+
+    return jsonify(ok=True,ranking=top,confianza=round(top[0]["score"],1),
+                   ya_corrida=ya_corrida)
+
+
+def registrar_pronostico(url, numero, fecha, hipodromo, top, participantes,
+                         pesos, ya_corrida):
+    """
+    Guarda lo que predijo la app. Si la carrera ya tiene puestos reales,
+    calcula el acierto y ajusta el algoritmo automaticamente.
+    """
+    if not url or numero is None:
+        return
+
+    predichos = [x["nombre"] for x in top]
+    resultado = None
+    acierto_ganador = None
+    aciertos_top4 = None
+
+    if ya_corrida:
+        llegados = sorted(
+            [h for h in participantes if h.get("puesto")],
+            key=lambda h: h["puesto"]
+        )
+        resultado = [h["nombre"] for h in llegados[:4]]
+        if resultado:
+            acierto_ganador = 1 if predichos[0] == resultado[0] else 0
+            aciertos_top4 = len(set(predichos) & set(resultado))
+
+    con = db()
+    con.execute("""
+        INSERT INTO pronosticos(url,numero,fecha,hipodromo,ranking,resultado,
+                                acierto_ganador,aciertos_top4,pesos_usados,
+                                creado_en,comparado_en)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(url,numero) DO UPDATE SET
+          resultado=COALESCE(excluded.resultado, pronosticos.resultado),
+          acierto_ganador=COALESCE(excluded.acierto_ganador, pronosticos.acierto_ganador),
+          aciertos_top4=COALESCE(excluded.aciertos_top4, pronosticos.aciertos_top4),
+          comparado_en=COALESCE(excluded.comparado_en, pronosticos.comparado_en)
+    """, (
+        url, int(numero), fecha, hipodromo,
+        json.dumps(predichos, ensure_ascii=False),
+        json.dumps(resultado, ensure_ascii=False) if resultado else None,
+        acierto_ganador, aciertos_top4,
+        json.dumps(pesos, ensure_ascii=False),
+        datetime.now().isoformat(timespec="seconds"),
+        datetime.now().isoformat(timespec="seconds") if resultado else None,
+    ))
+    con.commit()
+    con.close()
+
+    if resultado:
+        ajustar_algoritmo()
+
+
+def ajustar_algoritmo():
+    """
+    Compara todos los pronosticos ya resueltos y afina los pesos.
+    Metodo conservador: mueve cada peso de a poco segun si viene acertando
+    mejor o peor que el promedio historico. Nunca hace saltos bruscos.
+    """
+    con = db()
+    filas = con.execute("""
+        SELECT acierto_ganador, aciertos_top4, pesos_usados
+        FROM pronosticos WHERE resultado IS NOT NULL
+        ORDER BY id DESC LIMIT 200
+    """).fetchall()
+    con.close()
+
+    if len(filas) < 10:
+        return  # con menos de 10 carreras no hay con que aprender
+
+    recientes = filas[:30]
+    historico = filas
+
+    tasa_reciente = sum(f["aciertos_top4"] or 0 for f in recientes) / (len(recientes) * 4)
+    tasa_historica = sum(f["aciertos_top4"] or 0 for f in historico) / (len(historico) * 4)
+
+    pesos = cargar_pesos()
+    # Si lo reciente va peor que el historico, se explora un poco mas.
+    # Si va mejor, se refuerza la direccion actual. Paso chico: 3%.
+    direccion = 1.0 if tasa_reciente >= tasa_historica else -1.0
+    paso = 0.03 * direccion
+
+    for clave in pesos:
+        nuevo = pesos[clave] * (1 + paso)
+        limite = abs(PESOS_INICIALES[clave]) * 2.5
+        if PESOS_INICIALES[clave] >= 0:
+            pesos[clave] = max(0.0, min(limite, nuevo))
+        else:
+            pesos[clave] = min(0.0, max(-limite, nuevo))
+
+    guardar_pesos(pesos)
+
+# ============================================================
+# PANEL DE ADMIN — solo accesible con la clave ADMIN_KEY.
+# El usuario comun no ve nada de esto.
+# ============================================================
+
+ADMIN_KEY = os.getenv("ADMIN_KEY", "")
+
+def es_admin():
+    if not ADMIN_KEY:
+        return False
+    enviada = request.args.get("clave", "") or request.headers.get("X-Admin-Key", "")
+    return enviada == ADMIN_KEY
+
+@app.get("/admin")
+def admin_panel():
+    if not es_admin():
+        return "Acceso restringido.", 403
+    return render_template("admin.html")
+
+@app.get("/api/admin/rendimiento")
+def admin_rendimiento():
+    if not es_admin():
+        return jsonify(ok=False, error="Acceso restringido."), 403
+
+    con = db()
+    total = con.execute("SELECT COUNT(*) c FROM pronosticos").fetchone()["c"]
+    resueltos = con.execute(
+        "SELECT COUNT(*) c FROM pronosticos WHERE resultado IS NOT NULL"
+    ).fetchone()["c"]
+    stats = con.execute("""
+        SELECT
+          SUM(acierto_ganador) ganadores,
+          SUM(aciertos_top4) aciertos,
+          COUNT(*) n
+        FROM pronosticos WHERE resultado IS NOT NULL
+    """).fetchone()
+    ultimos = con.execute("""
+        SELECT fecha, hipodromo, numero, ranking, resultado,
+               acierto_ganador, aciertos_top4, comparado_en
+        FROM pronosticos WHERE resultado IS NOT NULL
+        ORDER BY id DESC LIMIT 40
+    """).fetchall()
+    pesos_actuales = con.execute(
+        "SELECT clave, valor, actualizado_en FROM algoritmo ORDER BY clave"
+    ).fetchall()
+    con.close()
+
+    n = stats["n"] or 0
+    return jsonify(
+        ok=True,
+        total_pronosticos=total,
+        carreras_comparadas=resueltos,
+        acierto_ganador_pct=round((stats["ganadores"] or 0) / n * 100, 1) if n else None,
+        acierto_top4_pct=round((stats["aciertos"] or 0) / (n * 4) * 100, 1) if n else None,
+        pesos=[dict(p) for p in pesos_actuales] or [
+            {"clave": k, "valor": v, "actualizado_en": "inicial"}
+            for k, v in PESOS_INICIALES.items()
+        ],
+        ultimas=[{
+            "fecha": u["fecha"],
+            "hipodromo": u["hipodromo"],
+            "numero": u["numero"],
+            "predicho": json.loads(u["ranking"]),
+            "real": json.loads(u["resultado"]) if u["resultado"] else [],
+            "acerto_ganador": bool(u["acierto_ganador"]),
+            "aciertos_top4": u["aciertos_top4"],
+        } for u in ultimos],
+    )
+
+
+@app.get("/api/admin/diagnostico")
+def admin_diagnostico():
+    """
+    Herramienta de control: muestra exactamente que responde el Stud Book
+    ante una busqueda. Sirve para cualquier caso futuro en que un caballo
+    no aparezca, sin tener que adivinar el motivo.
+    """
+    if not es_admin():
+        return jsonify(ok=False, error="Acceso restringido."), 403
+
+    termino = request.args.get("q", "").strip()
+    if not termino:
+        return jsonify(ok=False, error="Falta el nombre a probar."), 400
+
+    cabeceras = dict(HEADERS)
+    cabeceras["Accept"] = "application/json, text/javascript, */*; q=0.01"
+    cabeceras["X-Requested-With"] = "XMLHttpRequest"
+
+    informe = {"termino": termino, "intentos": []}
+
+    # Se prueban distintas variantes para ver cual devuelve resultados.
+    variantes = [
+        ("como lo manda el sitio (%20)", quote(termino)),
+        ("con signo mas (+)", quote_plus(termino)),
+        ("sin espacios", termino.replace(" ", "")),
+        ("solo la primera palabra", quote(termino.split()[0])),
+    ]
+    # Y distintos valores de 'tipo', por si filtra por categoria de ejemplar.
+    for etiqueta, q in variantes:
+        for tipo in ("1", "2", "0", "", "3"):
+            for muerto in ("1", "0"):
+                url = (f"{BASE}/ejemplares/autocomplete"
+                       f"?tipo={tipo}&muerto={muerto}&term={q}")
+                intento = {"variante": etiqueta, "tipo": tipo,
+                           "muerto": muerto, "url": url}
+                try:
+                    r = requests.get(url, headers=cabeceras, timeout=(4, 10))
+                    intento["status"] = r.status_code
+                    try:
+                        datos = r.json()
+                        lista = datos if isinstance(datos, list) else (
+                            datos.get("results") or datos.get("data") or []
+                        )
+                        intento["cantidad"] = len(lista)
+                        intento["nombres"] = [
+                            clean(str(x.get("text", "")))
+                            for x in lista[:15] if isinstance(x, dict)
+                        ]
+                        # Marcar si el buscado aparece en esta variante.
+                        buscado = normalize_text(termino).replace(" ", "")
+                        intento["ENCONTRADO"] = any(
+                            normalize_text(n).replace(" ", "") == buscado
+                            for n in intento["nombres"]
+                        )
+                    except Exception:
+                        intento["cantidad"] = 0
+                        intento["respuesta_cruda"] = r.text[:300]
+                except Exception as e:
+                    intento["error"] = str(e)
+                informe["intentos"].append(intento)
+
+    # Resumen: cuales encontraron exactamente el caballo buscado.
+    aciertos = [i for i in informe["intentos"] if i.get("ENCONTRADO")]
+    exitosos = [i for i in informe["intentos"] if i.get("cantidad")]
+    informe["resumen"] = {
+        "LO_ENCONTRARON": [
+            {"variante": i["variante"], "tipo": i["tipo"], "muerto": i["muerto"]}
+            for i in aciertos
+        ],
+        "variantes_con_algun_resultado": len(exitosos),
+        "variantes_probadas": len(informe["intentos"]),
+    }
+    informe["lo_que_usa_la_app"] = [
+        e["nombre"] for e in buscar_ejemplares(termino)
+    ]
+
+    return jsonify(ok=True, **informe)
+
+
+@app.get("/api/admin/diag-calendario")
+def admin_diag_calendario():
+    """
+    Comprueba si se pueden traer meses anteriores del calendario.
+    Prueba varias formas y dice cual funciona de verdad.
+    """
+    if not es_admin():
+        return jsonify(ok=False, error="Acceso restringido."), 403
+
+    anio = int(request.args.get("anio", "2026"))
+    mes = int(request.args.get("mes", "7"))
+    prefijo = f"{anio}-{mes:02d}-"
+    informe = {"pedido": f"{anio}-{mes:02d}", "intentos": []}
+
+    # Sacar el codigo de la pagina normal.
+    codigo = ""
+    try:
+        base_soup = fetch(BASE + "/reuniones")
+        codigo = _codigo_recaptcha(base_soup)
+        informe["codigo_encontrado"] = bool(codigo)
+        informe["codigo_largo"] = len(codigo)
+    except Exception as e:
+        informe["codigo_encontrado"] = False
+        informe["error_pagina_base"] = str(e)
+
+    formas = [
+        ("sin codigo", f"{BASE}/reuniones?mes={mes:02d}&anio={anio}"),
+        ("mes sin cero", f"{BASE}/reuniones?mes={mes}&anio={anio}"),
+    ]
+    if codigo:
+        formas += [
+            ("con codigo", f"{BASE}/reuniones?recaptcha={codigo}&mes={mes:02d}&anio={anio}"),
+            ("codigo al final", f"{BASE}/reuniones?mes={mes:02d}&anio={anio}&recaptcha={codigo}"),
+        ]
+
+    for etiqueta, url in formas:
+        intento = {"forma": etiqueta, "url": url[:110] + ("…" if len(url) > 110 else "")}
+        try:
+            soup = fetch(url)
+            reuniones = calendar_from_meetings(soup)
+            del_mes = [r for r in reuniones if r["fecha"].startswith(prefijo)]
+            intento["total_traido"] = len(reuniones)
+            intento["DEL_MES_PEDIDO"] = len(del_mes)
+            intento["FUNCIONA"] = len(del_mes) > 0
+            meses = sorted({r["fecha"][:7] for r in reuniones})
+            intento["meses_que_trajo"] = meses
+            intento["ejemplos"] = [
+                f"{r['fecha']} {r['hipodromo']}" for r in del_mes[:4]
+            ]
+        except Exception as e:
+            intento["error"] = str(e)
+        informe["intentos"].append(intento)
+
+    funcionan = [i["forma"] for i in informe["intentos"] if i.get("FUNCIONA")]
+    informe["RESUMEN"] = {
+        "FORMAS_QUE_FUNCIONAN": funcionan,
+        "se_puede_traer_meses_viejos": len(funcionan) > 0,
+    }
+    return jsonify(ok=True, **informe)
+
+
+SIGLAS = {
+    "palermo": "PAL", "san isidro": "SI", "la plata": "LP",
+    "la punta": "LPU", "rosario": "ROS", "tandil": "TAN",
+    "dolores": "DOL", "azul": "AZL", "tucuman": "TUC",
+    "cordoba": "CBA", "mendoza": "MZA", "santa fe": "SFE",
+}
+
+COLORES_HIP = {
+    "PAL": "#8c2a2a", "SI": "#153832", "LP": "#2b4a8c",
+    "LPU": "#5c2b8c", "ROS": "#2b8c6b", "TAN": "#8c6b2a",
+    "DOL": "#2a6b8c", "AZL": "#6b2a8c", "TUC": "#8c4a2a",
+}
+
+def sigla_de(hipodromo):
+    n = normalize_text(hipodromo)
+    for nombre, sigla in SIGLAS.items():
+        if nombre in n:
+            return sigla
+    # Si no esta en la lista, armar una sigla con las iniciales.
+    palabras = [p for p in n.split() if len(p) > 2]
+    return "".join(p[0] for p in palabras[:3]).upper() or "OTR"
+
+
+@app.get("/api/calendario-meses")
+def calendario_meses():
+    """
+    Calendario agrupado por mes, con los hipodromos de cada fecha.
+    Parametros: desde y hasta (AAAA-MM-DD). Por defecto, desde 2024.
+    """
+    hoy = datetime.now().strftime("%Y-%m-%d")
+    desde = request.args.get("desde", "2024-01-01")
+    hasta = request.args.get("hasta", hoy)
+
+    reuniones = calendario_entre(desde, hasta)
+    if not reuniones:
+        # Respaldo: lo que haya guardado en la base.
+        guardadas = saved_calendar()
+        reuniones = [r for r in guardadas if desde <= r["fecha"] <= hasta]
+        if not reuniones:
+            return jsonify(
+                ok=False,
+                error="No se pudo traer el calendario en este momento.",
+                fechas=[],
+            ), 503
+
+    # Agrupar por fecha.
+    por_fecha = {}
+    for r in reuniones:
+        f = r["fecha"]
+        if f not in por_fecha:
+            por_fecha[f] = {"fecha": f, "hipodromos": []}
+        sigla = sigla_de(r["hipodromo"])
+        if not any(h["sigla"] == sigla for h in por_fecha[f]["hipodromos"]):
+            por_fecha[f]["hipodromos"].append({
+                "nombre": r["hipodromo"],
+                "sigla": sigla,
+                "color": COLORES_HIP.get(sigla, "#5a6b66"),
+                "url": r.get("url", ""),
+            })
+
+    fechas = sorted(por_fecha.values(), key=lambda x: x["fecha"], reverse=True)
+
+    # Lista de hipodromos para el filtro.
+    hips = {}
+    for f in fechas:
+        for h in f["hipodromos"]:
+            hips[h["sigla"]] = {"nombre": h["nombre"], "sigla": h["sigla"],
+                                "color": h["color"]}
+
+    return jsonify(
+        ok=True,
+        fechas=fechas,
+        hipodromos=sorted(hips.values(), key=lambda h: h["nombre"]),
+        desde=desde,
+        hasta=hasta,
+    )
+
 
 @app.get("/api/videos")
 def videos():
@@ -804,256 +1612,215 @@ def videos():
 @app.post("/api/guardar")
 def guardar():
     data = request.get_json(silent=True) or {}
-    if not all(
-        data.get(key)
-        for key in ["fecha", "hipodromo", "numero", "participantes"]
-    ):
-        return jsonify(ok=False, error="Faltan datos."), 400
-
-    user_id = save_user_analysis(data)
-    return jsonify(
-        ok=True,
-        usuario_id=user_id,
-        mensaje=(
-            "Análisis ajustado del usuario guardado por separado. "
-            "El análisis oficial no fue reemplazado."
-        ),
-    )
+    if not all(data.get(k) for k in ["fecha","hipodromo","numero","participantes"]):
+        return jsonify(ok=False,error="Faltan datos."),400
+    con = db()
+    con.execute("""
+    INSERT INTO carreras(fecha,hipodromo,numero,premio,distancia,superficie,
+    estado_publicado,condicion,pista_dia,clima,viento,retiros,observaciones,
+    participantes,analisis,resultado_real,creado_en)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(fecha,hipodromo,numero) DO UPDATE SET
+    pista_dia=excluded.pista_dia,clima=excluded.clima,viento=excluded.viento,
+    retiros=excluded.retiros,observaciones=excluded.observaciones,
+    participantes=excluded.participantes,analisis=excluded.analisis,
+    creado_en=excluded.creado_en
+    """,(
+      data["fecha"],data["hipodromo"],int(data["numero"]),data.get("premio",""),
+      data.get("distancia"),data.get("superficie",""),data.get("estado_publicado",""),
+      data.get("condicion",""),data.get("pista_dia",""),data.get("clima",""),
+      data.get("viento",""),json.dumps(data.get("retiros",[]),ensure_ascii=False),
+      data.get("observaciones",""),json.dumps(data["participantes"],ensure_ascii=False),
+      json.dumps(data.get("analisis",{}),ensure_ascii=False),"",
+      datetime.now().isoformat(timespec="seconds")
+    ))
+    con.commit(); con.close()
+    return jsonify(ok=True,mensaje="Carrera y análisis guardados.")
 
 @app.get("/api/historial")
 def historial():
-    user_id = clean(
-        request.args.get("usuario_id")
-        or request.headers.get("X-LEA-Usuario")
-        or DEFAULT_USER
-    )[:80]
-
-    con = db()
-    rows = con.execute(
-        """
-        SELECT
-          c.id,c.fecha,c.hipodromo,c.numero,c.premio,
-          c.pista_dia,c.clima,c.analisis,c.resultado_real,
-          c.comparacion,c.analisis_generado_en,
-          u.analisis AS analisis_usuario,
-          u.datos_manuales AS datos_manuales_usuario
-        FROM carreras c
-        LEFT JOIN analisis_usuarios u
-          ON u.carrera_id=c.id AND u.usuario_id=?
-        ORDER BY c.fecha DESC,c.numero
-        """,
-        (user_id,),
-    ).fetchall()
+    con=db()
+    rows=con.execute("""SELECT id,fecha,hipodromo,numero,premio,pista_dia,clima,
+    analisis,resultado_real FROM carreras ORDER BY fecha DESC,numero""").fetchall()
     con.close()
+    return jsonify(ok=True,carreras=[dict(x) for x in rows])
 
-    races = []
-    for row in rows:
-        item = dict(row)
-        item["analisis"] = json_load(item["analisis"], {})
-        item["resultado_real"] = json_load(
-            item["resultado_real"],
-            [],
-        )
-        item["comparacion"] = json_load(
-            item["comparacion"],
-            {},
-        )
-        item["analisis_usuario"] = json_load(
-            item["analisis_usuario"],
-            {},
-        )
-        item["datos_manuales_usuario"] = json_load(
-            item["datos_manuales_usuario"],
-            {},
-        )
-        races.append(item)
+# ============================================================
+# RECOLECTOR AUTOMATICO
+# Recorre las reuniones del Stud Book, analiza cada carrera y compara
+# contra el resultado real. Corre solo en el servidor, sin que nadie
+# tenga que abrir la app.
+# ============================================================
 
-    return jsonify(
-        ok=True,
-        usuario_id=user_id,
-        carreras=races,
-    )
+RECOLECTOR = {
+    "corriendo": False,
+    "desde": "",
+    "hasta": "",
+    "reuniones_totales": 0,
+    "reuniones_hechas": 0,
+    "carreras_guardadas": 0,
+    "carreras_comparadas": 0,
+    "errores": 0,
+    "ultimo_mensaje": "",
+    "inicio": "",
+    "fin": "",
+}
+
+PAUSA_ENTRE_PEDIDOS = float(os.getenv("PAUSA_SCRAPING", "1.5"))  # segundos
 
 
-def valid_sync_request():
-    if not SYNC_TOKEN:
-        return True
-    supplied = (
-        request.headers.get("X-LEA-Sync-Token")
-        or request.args.get("token", "")
-    )
-    return supplied == SYNC_TOKEN
+def _log_recolector(msg):
+    RECOLECTOR["ultimo_mensaje"] = f"{datetime.now().strftime('%H:%M:%S')} — {msg}"
 
 
-def sync_studbook(date_from=None, date_to=None, max_new=2):
-    today = datetime.now().date()
-    start = date_from or (today - timedelta(days=2))
-    end = date_to or (today + timedelta(days=45))
-
-    meetings = calendar_from_meetings(
-        fetch(BASE + "/reuniones")
-    )
-    selected = []
-    for meeting in meetings:
-        try:
-            meeting_date = datetime.strptime(
-                meeting["fecha"],
-                "%Y-%m-%d",
-            ).date()
-        except ValueError:
-            continue
-        if start <= meeting_date <= end:
-            selected.append(meeting)
-
-    summary = {
-        "reuniones_revisadas": 0,
-        "carreras_detectadas": 0,
-        "analisis_nuevos": 0,
-        "resultados_nuevos": 0,
-        "comparaciones": 0,
-        "errores": [],
-    }
-
-    for meeting in selected:
-        try:
-            soup = fetch(meeting["url"])
-            races = extract_races_from_meeting(soup)
-            summary["reuniones_revisadas"] += 1
-
-            for race in races:
-                parsed = parse_race(soup, race["numero"])
-                if not parsed:
-                    continue
-
-                summary["carreras_detectadas"] += 1
-                official_result = parsed.get(
-                    "resultado_oficial",
-                    [],
-                )
-
-                race_data = {
-                    "fecha": meeting["fecha"],
-                    "hipodromo": meeting["hipodromo"],
-                    "numero": parsed["carrera"],
-                    "premio": parsed.get("premio", ""),
-                    "distancia": parsed.get("distancia") or None,
-                    "superficie": parsed.get("superficie", ""),
-                    "estado_publicado": parsed.get("estado", ""),
-                    "condicion": parsed.get("condicion", ""),
-                    "participantes": parsed.get("participantes", []),
-                }
-
-                analysis = None
-                has_analysis = official_analysis_exists(
-                    race_data["fecha"],
-                    race_data["hipodromo"],
-                    race_data["numero"],
-                )
-
-                if (
-                    not has_analysis
-                    and summary["analisis_nuevos"] < max_new
-                    and len(race_data["participantes"]) >= 2
-                ):
-                    enriched = [
-                        enrich_horse(dict(horse))
-                        for horse in race_data["participantes"]
-                    ]
-                    race_data["participantes"] = enriched
-                    analysis = build_analysis(
-                        enriched,
-                        race_data,
-                        analysis_type="oficial",
-                    )
-                    summary["analisis_nuevos"] += 1
-
-                comparison = save_official_race(
-                    race_data,
-                    analysis=analysis,
-                    official_result=official_result,
-                )
-
-                if official_result:
-                    summary["resultados_nuevos"] += 1
-                if comparison:
-                    summary["comparaciones"] += 1
-
-        except Exception as error:
-            summary["errores"].append({
-                "reunion": meeting.get("url", ""),
-                "detalle": str(error),
-            })
-
-    return summary
-
-
-@app.post("/api/sincronizar-studbook")
-def sincronizar_studbook():
-    if not valid_sync_request():
-        return jsonify(ok=False, error="No autorizado."), 401
-
-    data = request.get_json(silent=True) or {}
-
-    def parse_date(value):
-        if not value:
+def procesar_carrera(url_reunion, numero, fecha, hipodromo):
+    """
+    Analiza una carrera y la registra. Devuelve 'comparada' si la carrera
+    ya se corrio (habia puestos), 'guardada' si todavia no, o None si fallo.
+    """
+    try:
+        soup = fetch(url_reunion)
+        data = parse_race(soup, numero)
+        if not data:
             return None
-        return datetime.strptime(value, "%Y-%m-%d").date()
+        participantes = [p for p in data.get("participantes", []) if not p.get("retirado")]
+        if len(participantes) < 2:
+            return None
 
-    try:
-        date_from = parse_date(data.get("fecha_desde"))
-        date_to = parse_date(data.get("fecha_hasta"))
-        max_new = max(1, min(5, int(data.get("max_nuevas", 2))))
-    except (ValueError, TypeError):
-        return jsonify(
-            ok=False,
-            error="Parámetros de sincronización inválidos.",
-        ), 400
+        # Enriquecer solo si la carrera todavia no corrio: si ya corrio,
+        # el puesto real ya alcanza y evitamos miles de pedidos extra.
+        ya_corrida = any(p.get("puesto") for p in participantes)
+        if not ya_corrida:
+            participantes = [enrich_horse(dict(p)) for p in participantes]
 
-    try:
-        summary = sync_studbook(
-            date_from=date_from,
-            date_to=date_to,
-            max_new=max_new,
+        pesos = cargar_pesos()
+        ranked = []
+        for p in participantes:
+            score, motivos = score_horse(p, {"participantes": participantes,
+                                             "pista_dia": data.get("estado", "")}, pesos)
+            ranked.append({**p, "score": score, "motivos": motivos})
+        ranked.sort(key=lambda x: x["score"], reverse=True)
+        top = ranked[:4]
+        total = sum(x["score"] for x in top) or 1
+        for x in top:
+            x["probabilidad_relativa"] = round(x["score"] / total * 100, 1)
+
+        registrar_pronostico(
+            url=url_reunion, numero=numero, fecha=fecha, hipodromo=hipodromo,
+            top=top, participantes=participantes, pesos=pesos, ya_corrida=ya_corrida,
         )
-        return jsonify(
-            ok=True,
-            mensaje=(
-                "Stud Book revisado. Las carreras nuevas se analizaron "
-                "sin reemplazar los análisis oficiales existentes."
-            ),
-            resumen=summary,
-        )
-    except Exception as error:
-        return jsonify(
-            ok=False,
-            error="No se pudo sincronizar Stud Book.",
-            detalle=str(error),
-        ), 502
+        return "comparada" if ya_corrida else "guardada"
+    except Exception:
+        return None
 
 
-@app.get("/api/estado-automatizacion")
-def estado_automatizacion():
-    con = db()
-    row = con.execute(
-        """
-        SELECT
-          COUNT(*) AS carreras,
-          SUM(CASE WHEN analisis IS NOT NULL
-                    AND trim(analisis) NOT IN ('','{}','[]','null')
-                   THEN 1 ELSE 0 END) AS analizadas,
-          SUM(CASE WHEN resultado_real IS NOT NULL
-                    AND trim(resultado_real) NOT IN ('','[]','null')
-                   THEN 1 ELSE 0 END) AS con_resultado,
-          SUM(CASE WHEN comparacion IS NOT NULL
-                    AND trim(comparacion) NOT IN ('','{}','null')
-                   THEN 1 ELSE 0 END) AS comparadas
-        FROM carreras
-        """
-    ).fetchone()
-    con.close()
-    return jsonify(ok=True, estado=dict(row))
+def recolectar(desde, hasta):
+    """Recorre todas las reuniones entre dos fechas y procesa sus carreras."""
+    RECOLECTOR.update({
+        "corriendo": True, "desde": desde, "hasta": hasta,
+        "reuniones_totales": 0, "reuniones_hechas": 0,
+        "carreras_guardadas": 0, "carreras_comparadas": 0, "errores": 0,
+        "inicio": datetime.now().isoformat(timespec="seconds"), "fin": "",
+    })
+    try:
+        _log_recolector("Pidiendo el calendario oficial…")
+        calendario = calendar_from_meetings(fetch(BASE + "/reuniones"))
+
+        reuniones = [r for r in calendario if desde <= r["fecha"] <= hasta]
+        RECOLECTOR["reuniones_totales"] = len(reuniones)
+        _log_recolector(f"{len(reuniones)} reuniones encontradas entre {desde} y {hasta}")
+
+        for reunion in reuniones:
+            if not RECOLECTOR["corriendo"]:
+                _log_recolector("Detenido a pedido.")
+                break
+            try:
+                soup = fetch(reunion["url"])
+                carreras = extract_races_from_meeting(soup)
+                _log_recolector(
+                    f"{reunion['fecha']} {reunion['hipodromo']}: {len(carreras)} carreras"
+                )
+                for c in carreras:
+                    if not RECOLECTOR["corriendo"]:
+                        break
+                    r = procesar_carrera(
+                        reunion["url"], c["numero"], reunion["fecha"], reunion["hipodromo"]
+                    )
+                    if r == "comparada":
+                        RECOLECTOR["carreras_comparadas"] += 1
+                    elif r == "guardada":
+                        RECOLECTOR["carreras_guardadas"] += 1
+                    else:
+                        RECOLECTOR["errores"] += 1
+                    time.sleep(PAUSA_ENTRE_PEDIDOS)
+            except Exception:
+                RECOLECTOR["errores"] += 1
+            RECOLECTOR["reuniones_hechas"] += 1
+            time.sleep(PAUSA_ENTRE_PEDIDOS)
+
+        _log_recolector("Terminado.")
+    except Exception as e:
+        _log_recolector(f"Error general: {e}")
+    finally:
+        RECOLECTOR["corriendo"] = False
+        RECOLECTOR["fin"] = datetime.now().isoformat(timespec="seconds")
+
+
+@app.post("/api/admin/recolectar")
+def admin_recolectar():
+    if not es_admin():
+        return jsonify(ok=False, error="Acceso restringido."), 403
+    if RECOLECTOR["corriendo"]:
+        return jsonify(ok=False, error="Ya hay una recolección en curso."), 409
+
+    body = request.get_json(silent=True) or {}
+    hoy = datetime.now().strftime("%Y-%m-%d")
+    desde = body.get("desde") or request.args.get("desde") or "2026-01-01"
+    hasta = body.get("hasta") or request.args.get("hasta") or hoy
+
+    hilo = threading.Thread(target=recolectar, args=(desde, hasta), daemon=True)
+    hilo.start()
+    return jsonify(ok=True, mensaje=f"Recolección iniciada de {desde} a {hasta}.")
+
+
+@app.post("/api/admin/detener")
+def admin_detener():
+    if not es_admin():
+        return jsonify(ok=False, error="Acceso restringido."), 403
+    RECOLECTOR["corriendo"] = False
+    return jsonify(ok=True, mensaje="Se pidió detener la recolección.")
+
+
+@app.get("/api/admin/estado")
+def admin_estado():
+    if not es_admin():
+        return jsonify(ok=False, error="Acceso restringido."), 403
+    return jsonify(ok=True, **RECOLECTOR)
+
+
+def revision_diaria():
+    """
+    Tarea de fondo permanente: cada 6 horas revisa los ultimos 7 dias.
+    Asi las carreras que se van corriendo se comparan solas, sin que
+    nadie abra la app.
+    """
+    time.sleep(60)  # dejar que el servidor termine de arrancar
+    while True:
+        try:
+            if not RECOLECTOR["corriendo"]:
+                hoy = datetime.now()
+                desde = (hoy - timedelta(days=7)).strftime("%Y-%m-%d")
+                hasta = hoy.strftime("%Y-%m-%d")
+                recolectar(desde, hasta)
+        except Exception:
+            pass
+        time.sleep(6 * 60 * 60)
+
 
 init_db()
 
+if os.getenv("REVISION_AUTOMATICA", "1") == "1":
+    threading.Thread(target=revision_diaria, daemon=True).start()
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0",port=int(os.getenv("PORT","5000")),debug=True)
+    app.run(host="0.0.0.0",port=int(os.getenv("PORT","5000")),debug=os.getenv("FLASK_DEBUG","0")=="1")
