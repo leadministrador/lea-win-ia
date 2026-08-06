@@ -1,4 +1,3 @@
-
 from flask import Flask, render_template, request, jsonify
 import requests, re, sqlite3, json, os, time, threading
 from bs4 import BeautifulSoup
@@ -721,6 +720,131 @@ def _codigo_recaptcha(soup):
     return ""
 
 
+def _sesion_studbook():
+    """
+    Una sesion que conserva las cookies y se presenta como un navegador
+    real. Hace falta porque el sitio puede recordar el mes elegido en la
+    sesion, y porque puede rechazar pedidos que no parezcan de un navegador.
+    """
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/126.0 Safari/537.36"),
+        "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+                   "image/avif,image/webp,*/*;q=0.8"),
+        "Accept-Language": "es-AR,es;q=0.9",
+        "Referer": BASE + "/reuniones",
+        "Upgrade-Insecure-Requests": "1",
+    })
+    return s
+
+
+def _datos_del_formulario(soup):
+    """
+    Lee el formulario de la pagina de reuniones y devuelve como se llaman
+    sus campos y si se envia por GET o por POST. No se adivina: se lee.
+    """
+    for form in soup.find_all("form"):
+        campos = {}
+        nombres = []
+        for inp in form.find_all(["input", "select"]):
+            n = inp.get("name")
+            if not n:
+                continue
+            nombres.append(n)
+            if inp.name == "input":
+                campos[n] = inp.get("value", "")
+            else:
+                sel = inp.find("option", selected=True) or inp.find("option")
+                campos[n] = sel.get("value", "") if sel else ""
+        # El formulario del calendario tiene los campos de mes y año.
+        texto = " ".join(nombres).lower()
+        if any(x in texto for x in ["mes", "month", "anio", "año", "year"]):
+            return {
+                "accion": urljoin(BASE, form.get("action") or "/reuniones"),
+                "metodo": (form.get("method") or "get").lower(),
+                "campos": campos,
+                "nombres": nombres,
+            }
+    return None
+
+
+def _traer_mes(anio, mes):
+    """
+    Trae la pagina de un mes concreto. Prueba, en orden, las tres vias
+    posibles, cada una con la sesion abierta para conservar las cookies:
+      1) el formulario tal como lo declara la pagina
+      2) por direccion, con el codigo que traiga la pagina
+      3) por direccion pelada
+    Devuelve (reuniones, via_que_funciono).
+    """
+    prefijo = f"{anio}-{mes:02d}-"
+    s = _sesion_studbook()
+
+    # Primero se abre la pagina normal: asi se obtienen cookies y el formulario.
+    r0 = s.get(BASE + "/reuniones", timeout=(5, 15))
+    r0.raise_for_status()
+    soup0 = BeautifulSoup(r0.text, "html.parser")
+
+    formulario = _datos_del_formulario(soup0)
+    codigo = _codigo_recaptcha(soup0)
+
+    intentos = []
+
+    # 1) El formulario, tal como lo declara la pagina.
+    if formulario:
+        campos = dict(formulario["campos"])
+        for n in formulario["nombres"]:
+            bajo = n.lower()
+            if "mes" in bajo or "month" in bajo:
+                campos[n] = f"{mes:02d}"
+            elif "anio" in bajo or "año" in bajo or "year" in bajo:
+                campos[n] = str(anio)
+        intentos.append(("formulario", formulario["metodo"],
+                         formulario["accion"], campos))
+
+    # 2) Con el campo recaptcha VACIO, tal como lo declara el formulario.
+    params_vacio = {"recaptcha": "", "mes": f"{mes:02d}", "anio": str(anio)}
+    intentos.append(("recaptcha vacio", "get", BASE + "/reuniones", params_vacio))
+
+    # 3) Por direccion, con el codigo si aparecio.
+    params = {"mes": f"{mes:02d}", "anio": str(anio)}
+    if codigo:
+        intentos.append(("direccion con codigo", "get", BASE + "/reuniones",
+                         {**params, "recaptcha": codigo}))
+    # 4) Por direccion pelada, ya con las cookies de la sesion.
+    intentos.append(("direccion con sesion", "get", BASE + "/reuniones", params))
+    # 5) Por direccion, como POST.
+    intentos.append(("direccion como POST", "post", BASE + "/reuniones", params))
+    # 6) Con el orden de campos tal cual el formulario los declara.
+    intentos.append(("orden del formulario", "get", BASE + "/reuniones",
+                     {"recaptcha": "", "mes": str(mes), "anio": str(anio)}))
+
+    detalle = []
+    for etiqueta, metodo, accion, datos in intentos:
+        try:
+            if metodo == "post":
+                r = s.post(accion, data=datos, timeout=(5, 15))
+            else:
+                r = s.get(accion, params=datos, timeout=(5, 15))
+            reuniones = calendar_from_meetings(BeautifulSoup(r.text, "html.parser"))
+            del_mes = [x for x in reuniones if x["fecha"].startswith(prefijo)]
+            meses = sorted({x["fecha"][:7] for x in reuniones})
+            detalle.append({
+                "via": etiqueta, "metodo": metodo.upper(),
+                "status": r.status_code, "url": r.url[:120],
+                "total": len(reuniones), "DEL_MES": len(del_mes),
+                "meses_que_trajo": meses,
+            })
+            if del_mes:
+                return del_mes, etiqueta, detalle
+        except Exception as e:
+            detalle.append({"via": etiqueta, "error": str(e)[:120]})
+
+    return [], "", detalle
+
+
 def calendario_del_mes(anio, mes):
     """
     Devuelve las reuniones de un mes concreto (anio=2024, mes=3).
@@ -736,23 +860,9 @@ def calendario_del_mes(anio, mes):
         return cacheado
 
     try:
-        # Primero la pagina normal, para sacar el codigo que exige el sitio.
-        base_soup = fetch(BASE + "/reuniones")
-        codigo = _codigo_recaptcha(base_soup)
-
-        url = f"{BASE}/reuniones?mes={mes:02d}&anio={anio}"
-        if codigo:
-            url += f"&recaptcha={codigo}"
-
-        soup = fetch(url)
-        reuniones = calendar_from_meetings(soup)
-
-        # Quedarse solo con las del mes pedido: si el sitio ignoro el pedido,
-        # es preferible devolver vacio antes que datos de otro mes.
-        prefijo = f"{anio}-{mes:02d}-"
-        reuniones = [r for r in reuniones if r["fecha"].startswith(prefijo)]
-
-        cache_set(clave, reuniones)
+        reuniones, via, _ = _traer_mes(anio, mes)
+        if reuniones:
+            cache_set(clave, reuniones)
         return reuniones
     except Exception:
         return cacheado or []
@@ -1188,15 +1298,7 @@ def analizar():
     if len(horses) < 2:
         return jsonify(ok=False,error="Se necesitan al menos dos participantes confirmados."),400
     pesos = cargar_pesos()
-    ranked = []
-    for h in horses:
-        score, reasons = score_horse(h, data, pesos)
-        ranked.append({**h,"score":score,"motivos":reasons})
-    ranked.sort(key=lambda x:x["score"], reverse=True)
-    top = ranked[:4]
-    total = sum(x["score"] for x in top) or 1
-    for x in top:
-        x["probabilidad_relativa"] = round(x["score"]/total*100,1)
+    ranked, top = rankear(horses, data, pesos)
 
     # Guardar el pronostico y, si la carrera ya se corrio, comparar en el acto.
     ya_corrida = any(h.get("puesto") for h in horses)
@@ -1223,11 +1325,27 @@ def registrar_pronostico(url, numero, fecha, hipodromo, top, participantes,
     """
     Guarda lo que predijo la app. Si la carrera ya tiene puestos reales,
     calcula el acierto y ajusta el algoritmo automaticamente.
+    IMPORTANTE: si ya habia un pronostico guardado, NO se pisa. El valor
+    del pronostico esta en haberse hecho antes de conocer el resultado.
     """
     if not url or numero is None:
         return
 
     predichos = [x["nombre"] for x in top]
+
+    # Si ya hay un pronostico guardado para esta carrera, se conserva ese.
+    con = db()
+    previo = con.execute(
+        "SELECT ranking FROM pronosticos WHERE url=? AND numero=?",
+        (url, int(numero))
+    ).fetchone()
+    con.close()
+    if previo:
+        try:
+            predichos = json.loads(previo["ranking"]) or predichos
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     resultado = None
     acierto_ganador = None
     aciertos_top4 = None
@@ -1269,11 +1387,42 @@ def registrar_pronostico(url, numero, fecha, hipodromo, top, participantes,
         ajustar_algoritmo()
 
 
+def ordenar_para_pronosticar(participantes):
+    """
+    Ordena los caballos por su NUMERO antes de puntuarlos.
+    Es imprescindible: la tabla de una carrera ya corrida viene ordenada
+    por orden de llegada. Si se puntuara en ese orden y varios caballos
+    empataran, el desempate copiaria el resultado y el acierto seria falso.
+    """
+    return sorted(
+        participantes,
+        key=lambda p: (p.get("numero") is None, p.get("numero") or 0,
+                       p.get("nombre") or "")
+    )
+
+
+def rankear(participantes, contexto, pesos):
+    """Puntua y ordena a los participantes. Devuelve los cuatro primeros."""
+    base = ordenar_para_pronosticar(participantes)
+    ranked = []
+    for p in base:
+        score, motivos = score_horse(p, contexto, pesos)
+        ranked.append({**p, "score": score, "motivos": motivos})
+    # Desempate por nombre, para que nunca dependa del orden de llegada.
+    ranked.sort(key=lambda x: (-x["score"], x.get("nombre") or ""))
+    top = ranked[:4]
+    total = sum(x["score"] for x in top) or 1
+    for x in top:
+        x["probabilidad_relativa"] = round(x["score"] / total * 100, 1)
+    return ranked, top
+
+
 def ajustar_algoritmo():
     """
-    Compara todos los pronosticos ya resueltos y afina los pesos.
-    Metodo conservador: mueve cada peso de a poco segun si viene acertando
-    mejor o peor que el promedio historico. Nunca hace saltos bruscos.
+    Compara los pronosticos ya resueltos y afina los pesos.
+    Cada peso tiene un piso y un techo para que nunca se anule: si todos
+    los pesos llegaran a cero, todos los caballos puntuarian igual y el
+    pronostico dejaria de significar algo.
     """
     con = db()
     filas = con.execute("""
@@ -1283,8 +1432,8 @@ def ajustar_algoritmo():
     """).fetchall()
     con.close()
 
-    if len(filas) < 10:
-        return  # con menos de 10 carreras no hay con que aprender
+    if len(filas) < 20:
+        return  # con menos de 20 carreras no hay con que aprender
 
     recientes = filas[:30]
     historico = filas
@@ -1293,18 +1442,19 @@ def ajustar_algoritmo():
     tasa_historica = sum(f["aciertos_top4"] or 0 for f in historico) / (len(historico) * 4)
 
     pesos = cargar_pesos()
-    # Si lo reciente va peor que el historico, se explora un poco mas.
-    # Si va mejor, se refuerza la direccion actual. Paso chico: 3%.
     direccion = 1.0 if tasa_reciente >= tasa_historica else -1.0
-    paso = 0.03 * direccion
+    paso = 0.02 * direccion
 
     for clave in pesos:
-        nuevo = pesos[clave] * (1 + paso)
-        limite = abs(PESOS_INICIALES[clave]) * 2.5
-        if PESOS_INICIALES[clave] >= 0:
-            pesos[clave] = max(0.0, min(limite, nuevo))
+        inicial = PESOS_INICIALES[clave]
+        nuevo = pesos[clave] + (abs(inicial) * paso)   # paso fijo, no proporcional
+        # Cada peso se mueve como mucho entre la mitad y el doble del inicial.
+        piso = abs(inicial) * 0.5
+        techo = abs(inicial) * 2.0
+        if inicial >= 0:
+            pesos[clave] = max(piso, min(techo, nuevo))
         else:
-            pesos[clave] = min(0.0, max(-limite, nuevo))
+            pesos[clave] = min(-piso, max(-techo, nuevo))
 
     guardar_pesos(pesos)
 
@@ -1460,8 +1610,8 @@ def admin_diagnostico():
 @app.get("/api/admin/diag-calendario")
 def admin_diag_calendario():
     """
-    Comprueba si se pueden traer meses anteriores del calendario.
-    Prueba varias formas y dice cual funciona de verdad.
+    Comprueba si se pueden traer meses anteriores. Ahora mira el formulario
+    real de la pagina y prueba cuatro vias distintas, con sesion abierta.
     """
     if not es_admin():
         return jsonify(ok=False, error="Acceso restringido."), 403
@@ -1469,52 +1619,53 @@ def admin_diag_calendario():
     anio = int(request.args.get("anio", "2026"))
     mes = int(request.args.get("mes", "7"))
     prefijo = f"{anio}-{mes:02d}-"
-    informe = {"pedido": f"{anio}-{mes:02d}", "intentos": []}
+    informe = {"pedido": f"{anio}-{mes:02d}"}
 
-    # Sacar el codigo de la pagina normal.
-    codigo = ""
     try:
-        base_soup = fetch(BASE + "/reuniones")
-        codigo = _codigo_recaptcha(base_soup)
-        informe["codigo_encontrado"] = bool(codigo)
-        informe["codigo_largo"] = len(codigo)
+        s = _sesion_studbook()
+        r0 = s.get(BASE + "/reuniones", timeout=(5, 15))
+        soup0 = BeautifulSoup(r0.text, "html.parser")
+        informe["cookies"] = list(s.cookies.keys())
     except Exception as e:
-        informe["codigo_encontrado"] = False
-        informe["error_pagina_base"] = str(e)
+        return jsonify(ok=False, error=f"No se pudo abrir la pagina: {e}"), 502
 
-    formas = [
-        ("sin codigo", f"{BASE}/reuniones?mes={mes:02d}&anio={anio}"),
-        ("mes sin cero", f"{BASE}/reuniones?mes={mes}&anio={anio}"),
-    ]
-    if codigo:
-        formas += [
-            ("con codigo", f"{BASE}/reuniones?recaptcha={codigo}&mes={mes:02d}&anio={anio}"),
-            ("codigo al final", f"{BASE}/reuniones?mes={mes:02d}&anio={anio}&recaptcha={codigo}"),
-        ]
+    # 1) Como es el formulario, de verdad
+    formulario = _datos_del_formulario(soup0)
+    informe["FORMULARIO"] = formulario or "no se encontro un formulario con mes/año"
 
-    for etiqueta, url in formas:
-        intento = {"forma": etiqueta, "url": url[:110] + ("…" if len(url) > 110 else "")}
-        try:
-            soup = fetch(url)
-            reuniones = calendar_from_meetings(soup)
-            del_mes = [r for r in reuniones if r["fecha"].startswith(prefijo)]
-            intento["total_traido"] = len(reuniones)
-            intento["DEL_MES_PEDIDO"] = len(del_mes)
-            intento["FUNCIONA"] = len(del_mes) > 0
-            meses = sorted({r["fecha"][:7] for r in reuniones})
-            intento["meses_que_trajo"] = meses
-            intento["ejemplos"] = [
-                f"{r['fecha']} {r['hipodromo']}" for r in del_mes[:4]
-            ]
-        except Exception as e:
-            intento["error"] = str(e)
-        informe["intentos"].append(intento)
+    # Todos los formularios, por si el filtro fue muy estricto
+    todos = []
+    for f in soup0.find_all("form"):
+        todos.append({
+            "accion": f.get("action", ""),
+            "metodo": f.get("method", "get"),
+            "campos": [i.get("name") for i in f.find_all(["input","select"]) if i.get("name")],
+        })
+    informe["todos_los_formularios"] = todos[:6]
 
-    funcionan = [i["forma"] for i in informe["intentos"] if i.get("FUNCIONA")]
+    # Todos los <select> de la pagina, con sus opciones
+    selects = []
+    for sel in soup0.find_all("select"):
+        opciones = [o.get("value","") for o in sel.find_all("option")][:14]
+        selects.append({"nombre": sel.get("name",""), "id": sel.get("id",""),
+                        "opciones": opciones})
+    informe["selectores"] = selects[:6]
+
+    informe["codigo_recaptcha"] = bool(_codigo_recaptcha(soup0))
+
+    # 2) Probar las vias
+    try:
+        reuniones, via, detalle = _traer_mes(anio, mes)
+    except Exception as e:
+        reuniones, via, detalle = [], f"error: {e}", []
+
     informe["RESUMEN"] = {
-        "FORMAS_QUE_FUNCIONAN": funcionan,
-        "se_puede_traer_meses_viejos": len(funcionan) > 0,
+        "se_puede_traer_meses_viejos": bool(reuniones),
+        "VIA_QUE_FUNCIONA": via,
+        "reuniones_del_mes": len(reuniones),
+        "ejemplos": [f"{r['fecha']} {r['hipodromo']}" for r in reuniones[:5]],
     }
+    informe["DETALLE_DE_CADA_INTENTO"] = detalle
     return jsonify(ok=True, **informe)
 
 
@@ -1769,6 +1920,29 @@ def api_tabulada():
     return jsonify(ok=True, **resultado)
 
 
+@app.post("/api/admin/reiniciar")
+def admin_reiniciar():
+    """
+    Borra los pronosticos guardados y vuelve el algoritmo a sus valores
+    iniciales. Sirve cuando los datos quedaron mal por un error de calculo.
+    """
+    if not es_admin():
+        return jsonify(ok=False, error="Acceso restringido."), 403
+
+    con = db()
+    n = con.execute("SELECT COUNT(*) c FROM pronosticos").fetchone()["c"]
+    con.execute("DELETE FROM pronosticos")
+    con.execute("DELETE FROM algoritmo")
+    con.commit()
+    con.close()
+    guardar_pesos(PESOS_INICIALES)
+
+    return jsonify(ok=True,
+                   mensaje=(f"Se borraron {n} pronósticos. "
+                            "El algoritmo volvió a sus valores iniciales."),
+                   borrados=n)
+
+
 @app.get("/api/videos")
 def videos():
     horse = request.args.get("caballo","").strip()
@@ -1873,16 +2047,11 @@ def procesar_carrera(url_reunion, numero, fecha, hipodromo):
             participantes = [enrich_horse(dict(p)) for p in participantes]
 
         pesos = cargar_pesos()
-        ranked = []
-        for p in participantes:
-            score, motivos = score_horse(p, {"participantes": participantes,
-                                             "pista_dia": data.get("estado", "")}, pesos)
-            ranked.append({**p, "score": score, "motivos": motivos})
-        ranked.sort(key=lambda x: x["score"], reverse=True)
-        top = ranked[:4]
-        total = sum(x["score"] for x in top) or 1
-        for x in top:
-            x["probabilidad_relativa"] = round(x["score"] / total * 100, 1)
+        ranked, top = rankear(
+            participantes,
+            {"participantes": participantes, "pista_dia": data.get("estado", "")},
+            pesos,
+        )
 
         registrar_pronostico(
             url=url_reunion, numero=numero, fecha=fecha, hipodromo=hipodromo,
